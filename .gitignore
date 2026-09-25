@@ -1,0 +1,41 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Runtime and local data
+runtime/
+logs/
+*.log
+browser_profiles/
+profile/
+cache/
+temp/
+tmp/
+*.tmp
+
+# Local credentials and sensitive files
+.env
+.env.*
+secrets/
+credentials/
+*.pem
+*.key
+*.crt
+*.sqlite3
+*.db
+
+# OS files
+.DS_Store
+Thumbs.db

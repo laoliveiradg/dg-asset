@@ -1,0 +1,64 @@
+# AGENTS.md
+
+## Regras permanentes
+
+1. Trabalhar somente dentro deste repositório.
+2. Ler este arquivo e a documentação relevante em /docs antes de alterar código.
+3. Não implementar funcionalidades além da tarefa solicitada.
+4. Não remover funcionalidades existentes sem justificativa e autorização explícita.
+5. Não realizar grandes mudanças arquiteturais silenciosamente.
+6. Antes de uma mudança estrutural importante, explicar:
+   - problema;
+   - solução;
+   - arquivos afetados;
+   - riscos;
+   - impacto.
+7. Não armazenar em código-fonte ou texto puro versionado:
+   - senhas;
+   - tokens;
+   - cookies;
+   - sessões;
+   - credenciais.
+8. A interface não pode executar operações demoradas na thread principal.
+9. Leitura de PPT, rede, download, compactação e automação futura não podem congelar a interface.
+10. Providers devem permanecer desacoplados da UI.
+11. Entrada de PPT não pode depender dos módulos de download.
+12. Assetway, Shutterstock e Envato devem possuir conectores independentes.
+13. Todo provider deverá futuramente seguir um contrato comum.
+14. URLs de arquivos e URLs coladas deverão futuramente alimentar a mesma fila interna.
+15. Downloads duplicados devem ser evitados.
+16. Qualidade máxima disponível é obrigatória.
+17. Não aceitar como download válido:
+   - preview;
+   - thumbnail;
+   - screenshot;
+   - imagem com watermark;
+   - versão reduzida quando houver versão superior.
+18. Se a maior qualidade esperada não puder ser obtida, o item deve futuramente ser tratado como falha ou pendência, nunca substituído silenciosamente por baixa qualidade.
+19. Desempenho deve ser mensurável.
+20. Otimizações não devem ser consideradas válidas somente por percepção subjetiva.
+21. Reutilizar sessões e conexões quando tecnicamente apropriado.
+22. Evitar inicializações repetidas e desnecessárias de navegador.
+23. Runtime, cache, downloads temporários, logs sensíveis, perfis de navegador e credenciais jamais devem ser versionados.
+24. Toda alteração deve preservar os testes existentes.
+25. Antes de concluir uma tarefa:
+   - executar testes;
+   - executar lint;
+   - verificar imports;
+   - verificar inicialização quando aplicável.
+26. Não avançar automaticamente para a próxima etapa do desenvolvimento.
+
+## Regras de etapa atual
+
+- Esta etapa implementa profiles locais persistentes e autenticação manual em QtWebEngine para Assetway, Shutterstock e Envato.
+- Não capturar nem persistir senhas, exportar cookies, copiar tokens ou reutilizar profiles de navegadores externos.
+- QtWebEngine profiles/pages devem ser criados, usados e destruídos na thread da UI; operações de parsing permanecem em workers.
+- Profiles ficam separados por provider dentro de runtime/browser_profiles e nunca são versionados.
+- Não implementar downloads, scraping, automação, seleção de qualidade, ZIP ou persistência da fila.
+- A aplicação não deve marcar sessões AUTHENTICATED sem validação específica confiável.
+
+## Revisão e responsabilidade
+
+- Qualquer alteração deve ser pequena, justificável e segura.
+- Mudanças estruturais importantes requerem explicação clara antes da implementação.
+- Nenhum agente deve introduzir dependências ou arquivos sensíveis sem necessidade.
