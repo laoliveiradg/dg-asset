@@ -50,12 +50,14 @@
 
 ## Regras de etapa atual
 
-- Esta etapa substitui QtWebEngine ativo por Google Chrome próprio, iniciado pelo ImageDownloader e controlado por CDP local.
-- Nunca usar profile pessoal, conectar a Chrome externo, copiar cookies ou encerrar processos que não sejam próprios.
-- Profiles ficam separados por provider em runtime/chrome_profiles e nunca são versionados.
-- O Chrome usa porta DevTools efêmera, vinculada a 127.0.0.1, e modo interativo visível.
+- A Etapa 06B mantém Chrome próprio gerenciado por CDP local disponível para providers cuja política permita esse fluxo.
+- A política da Etapa 06C é centralizada por provider: Shutterstock usa navegação interativa pelo navegador padrão; Assetway e Envato permanecem UNVALIDATED.
+- Nunca usar profile pessoal no Chrome gerenciado, conectar a Chrome externo via CDP, copiar cookies ou encerrar processos que não sejam próprios.
+- A navegação interativa pelo navegador padrão não autoriza leitura ou alteração do profile normal do usuário.
+- Profiles gerenciados ficam separados por provider em runtime/chrome_profiles e nunca são versionados.
+- O Chrome gerenciado usa porta DevTools efêmera, vinculada a 127.0.0.1, e modo interativo visível.
 - A implementação QtWebEngine anterior permanece somente como legado inativo temporário para rollback.
-- Não implementar downloads, scraping, automação, técnicas stealth, seleção de qualidade, ZIP ou persistência da fila.
+- Não implementar downloads, scraping, automação de sites, técnicas stealth/anti-bot, seleção de qualidade, ZIP ou persistência da fila.
 - A aplicação não deve marcar sessões AUTHENTICATED sem validação específica confiável.
 
 ## Revisão e responsabilidade

@@ -79,4 +79,4 @@ O desenvolvimento será realizado em fases separadas. Cada fase deve ser autoriz
 
 Nenhuma fase pode avançar automaticamente para a próxima sem autorização e validação explícitas.
 
-Etapas 01 a 06 foram concluídas. A Etapa 06B está autorizada para migrar o navegador ativo a Chrome próprio gerenciado por CDP, preservando QtWebEngine como legado inativo. A Etapa 07 não está autorizada por esta tarefa.
+Etapas 01 a 06B foram concluídas. A Etapa 06C define políticas de execução independentes por provider: Shutterstock requer interação no navegador padrão; Assetway e Envato permanecem não validados. A estratégia de download deverá ser validada provider por provider antes de qualquer automação. A Etapa 07 não está autorizada por esta tarefa.

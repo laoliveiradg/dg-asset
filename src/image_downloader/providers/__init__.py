@@ -1,5 +1,14 @@
 """Offline provider detection package."""
 
+from image_downloader.providers.capabilities import ProviderExecutionMode
+from image_downloader.providers.execution_policy import (
+    DEFAULT_PROVIDER_EXECUTION_POLICY,
+    ProviderExecutionPolicy,
+)
+from image_downloader.providers.interactive import (
+    InteractiveProviderError,
+    open_interactive_provider,
+)
 from image_downloader.providers.models import (
     ProviderClassification,
     ProviderId,
@@ -21,11 +30,16 @@ def classify_url_records(records: list[object]) -> list[ProviderClassification]:
 
 
 __all__ = [
+    "DEFAULT_PROVIDER_EXECUTION_POLICY",
+    "InteractiveProviderError",
     "ProviderClassification",
     "ProviderDetector",
+    "ProviderExecutionMode",
+    "ProviderExecutionPolicy",
     "ProviderId",
     "ProviderMatch",
     "ProviderRegistry",
     "classify_url",
     "classify_url_records",
+    "open_interactive_provider",
 ]

@@ -4,17 +4,18 @@ Aplicação desktop local para Windows para automatizar o download de imagens us
 
 ## Etapa atual
 
-Etapa 06B: preparação da fila e sessões locais por Google Chrome gerenciado. A aplicação permite:
+Etapa 06C: política de execução por provider, mantendo a infraestrutura Chrome/CDP da 06B. A aplicação permite:
 
 - arrastar ou selecionar apresentações `.pptx`;
 - colar texto com uma ou várias URLs;
 - analisar entradas automaticamente em worker Qt;
 - visualizar providers, itens não suportados e origens consolidadas;
 - limpar o lote e começar outro;
-- abrir Assetway, Shutterstock e Envato no Chrome real com profiles separados e persistentes;
-- conectar somente à instância própria pelo Chrome DevTools Protocol em localhost.
+- abrir Assetway e Envato no Chrome gerenciado, com profiles separados e persistentes;
+- abrir o acesso e itens Shutterstock no navegador padrão, sem CDP ou controle do profile pessoal;
+- conectar o Chrome gerenciado somente à instância própria pelo Chrome DevTools Protocol em localhost.
 
-O parsing e a classificação são locais. Sites só são acessados quando o usuário abre um provider. O login é manual; senhas não são capturadas ou armazenadas. Não há downloads, scraping, ZIP ou automação de sites.
+O parsing e a classificação são locais. Shutterstock é `INTERACTIVE_REQUIRED`; Assetway e Envato são `UNVALIDATED`. Essa política não altera o estado `READY` da fila para providers conhecidos. Login e interação permanecem manuais. Não há downloads, scraping, ZIP, stealth ou automação de sites.
 
 ## Organização
 
@@ -33,4 +34,4 @@ pip install -e .[dev]
 python -m image_downloader
 ```
 
-O texto colado é analisado após um debounce de 300 ms. Profiles Chrome vivem em `runtime/chrome_profiles/` e não são versionados. A sessão permanece não verificada até existir validação segura específica do provider. A antiga implementação QtWebEngine está mantida apenas como legado inativo.
+O texto colado é analisado após um debounce de 300 ms. Profiles Chrome gerenciados vivem em `runtime/chrome_profiles/` e não são versionados. Estratégias serão validadas provider por provider; o estado de sessão permanece conservador. A antiga implementação QtWebEngine está mantida apenas como legado inativo.

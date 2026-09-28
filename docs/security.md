@@ -43,3 +43,11 @@ Não há validação definitiva de login, extração de assets, scraping, automa
 - O encerramento usa o handle `Popen` guardado pelo manager e nunca procura processos por nome ou encerra Chrome externo.
 - A presença de cookies nunca significa `AUTHENTICATED`; o estado continua `UNVERIFIED`.
 - QtWebEngine permanece no código como legado inativo para rollback; a importação ativa do app foi testada para não carregar os módulos QtWebEngine.
+
+## Política interativa por provider (Etapa 06C)
+
+- Shutterstock usa `webbrowser.open` para uma navegação iniciada pelo usuário no navegador padrão; a aplicação não controla nem lê o profile desse navegador.
+- A navegação interativa não inicia CDP, não conecta a Chrome externo, não copia sessão/cookies e não lê storage.
+- Assetway e Envato permanecem `UNVALIDATED` e usam somente a infraestrutura Chrome gerenciada existente, com profiles isolados quando o usuário escolhe abrir o acesso.
+- Não se tenta mascarar automação nem contornar controles anti-bot; login, 2FA e ações do site permanecem manuais.
+- A URL do item é passada sem reconstrução, preservando query e fragmento; abrir a URL não altera o estado da fila.

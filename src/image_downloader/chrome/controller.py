@@ -15,6 +15,11 @@ from image_downloader.chrome.models import (
     ChromeSessionStatus,
 )
 from image_downloader.chrome.runtime import ChromeOpenResult, ChromeRuntime
+from image_downloader.providers.capabilities import ProviderExecutionMode
+from image_downloader.providers.execution_policy import (
+    DEFAULT_PROVIDER_EXECUTION_POLICY,
+    ProviderExecutionPolicy,
+)
 from image_downloader.providers.models import ProviderId
 
 logger = logging.getLogger(__name__)
@@ -54,9 +59,16 @@ class ChromeSessionController(QObject):
     clear_finished = Signal(object, bool)
     shutdown_finished = Signal()
 
-    def __init__(self, parent=None, *, chrome_runtime: ChromeRuntime | None = None) -> None:
+    def __init__(
+        self,
+        parent=None,
+        *,
+        chrome_runtime: ChromeRuntime | None = None,
+        execution_policy: ProviderExecutionPolicy = DEFAULT_PROVIDER_EXECUTION_POLICY,
+    ) -> None:
         super().__init__(parent)
-        self.chrome_runtime = chrome_runtime or ChromeRuntime()
+        self.chrome_runtime = chrome_runtime
+        self.execution_policy = execution_policy
         self._lock = RLock()
         self._active: dict[ProviderId, str] = {}
         self._tasks: set[RuntimeTask] = set()
@@ -70,56 +82,82 @@ class ChromeSessionController(QObject):
         self._monitor.start()
 
     def status(self, provider: ProviderId | str) -> ChromeSessionStatus:
-        return self.chrome_runtime.status(self._require_provider(provider))
+        resolved = self._require_provider(provider)
+        if self.execution_policy.mode_for(resolved) != ProviderExecutionMode.UNVALIDATED:
+            return ChromeSessionStatus(
+                resolved,
+                ChromeSessionState.UNVERIFIED,
+                "provider_not_managed_by_chrome",
+                False,
+                None,
+            )
+        if self.chrome_runtime is None:
+            return ChromeSessionStatus(
+                resolved,
+                ChromeSessionState.UNVERIFIED,
+                "chrome_closed",
+                False,
+                None,
+            )
+        return self.chrome_runtime.status(resolved)
 
     def open_provider(self, provider: ProviderId | str) -> bool:
         resolved = self._require_provider(provider)
+        if self.execution_policy.mode_for(resolved) != ProviderExecutionMode.UNVALIDATED:
+            return False
         with self._lock:
             if self._shutting_down or resolved in self._active:
                 return False
             self._active[resolved] = "open"
+        runtime = self._ensure_runtime()
         self.status_changed.emit(
             ChromeSessionStatus(
                 resolved,
                 ChromeSessionState.CHECKING,
                 "chrome_starting",
-                self.chrome_runtime.process_manager.is_running(resolved),
+                runtime.process_manager.is_running(resolved),
                 None,
             )
         )
         return self._submit(
             "open",
             resolved,
-            lambda: self.chrome_runtime.open_provider(resolved),
+            lambda: runtime.open_provider(resolved),
         )
 
     def clear_provider(self, provider: ProviderId | str) -> bool:
         resolved = self._require_provider(provider)
+        if self.execution_policy.mode_for(resolved) != ProviderExecutionMode.UNVALIDATED:
+            return False
         with self._lock:
             if self._shutting_down or resolved in self._active:
                 return False
             self._active[resolved] = "clear"
+        runtime = self._ensure_runtime()
         self.status_changed.emit(
             ChromeSessionStatus(
                 resolved,
                 ChromeSessionState.CHECKING,
                 "chrome_clearing_profile",
-                self.chrome_runtime.process_manager.is_running(resolved),
+                runtime.process_manager.is_running(resolved),
                 None,
             )
         )
         return self._submit(
             "clear",
             resolved,
-            lambda: self.chrome_runtime.clear_provider(resolved),
+            lambda: runtime.clear_provider(resolved),
         )
 
     def refresh_statuses(self) -> None:
         with self._lock:
             active_providers = set(self._active)
         for provider in SUPPORTED_PROVIDERS:
-            if provider not in active_providers:
-                self.status_changed.emit(self.chrome_runtime.status(provider))
+            if (
+                provider not in active_providers
+                and self.execution_policy.mode_for(provider) == ProviderExecutionMode.UNVALIDATED
+            ):
+                self.status_changed.emit(self.status(provider))
 
     def shutdown(self) -> None:
         self._monitor.stop()
@@ -136,7 +174,8 @@ class ChromeSessionController(QObject):
     def _shutdown_runtime(self) -> None:
         self._pool.waitForDone()
         try:
-            self.chrome_runtime.shutdown()
+            if self.chrome_runtime is not None:
+                self.chrome_runtime.shutdown()
         except Exception:
             logger.warning("managed Chrome shutdown failed")
         finally:
@@ -167,12 +206,13 @@ class ChromeSessionController(QObject):
 
         if isinstance(result, Exception):
             logger.warning("provider=%s chrome_%s_failed", provider.value, operation)
-            self.chrome_runtime.record_error(provider, operation)
+            runtime = self._ensure_runtime()
+            runtime.record_error(provider, operation)
             status = ChromeSessionStatus(
                 provider,
                 ChromeSessionState.ERROR,
                 "chrome_start_failed" if operation == "open" else "chrome_clear_failed",
-                self.chrome_runtime.process_manager.is_running(provider),
+                runtime.process_manager.is_running(provider),
                 None,
             )
             self.status_changed.emit(status)
@@ -181,7 +221,8 @@ class ChromeSessionController(QObject):
                 self.clear_finished.emit(provider, False)
             return
 
-        status = self.chrome_runtime.status(provider)
+        runtime = self._ensure_runtime()
+        status = runtime.status(provider)
         if operation == "open" and isinstance(result, ChromeOpenResult):
             timings = result.timings
             logger.info(
@@ -199,6 +240,11 @@ class ChromeSessionController(QObject):
         self.operation_finished.emit(operation, provider, True)
         if operation == "clear":
             self.clear_finished.emit(provider, True)
+
+    def _ensure_runtime(self) -> ChromeRuntime:
+        if self.chrome_runtime is None:
+            self.chrome_runtime = ChromeRuntime()
+        return self.chrome_runtime
 
     @staticmethod
     def _require_provider(provider: ProviderId | str) -> ProviderId:

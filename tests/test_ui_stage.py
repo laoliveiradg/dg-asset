@@ -4,6 +4,7 @@ import os
 import threading
 import zipfile
 from pathlib import Path
+from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -13,8 +14,14 @@ from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import QApplication
 
 from image_downloader.input.models import SourceType, UrlOccurrence, UrlRecord
+from image_downloader.providers.capabilities import ProviderExecutionMode
+from image_downloader.providers.execution_policy import (
+    DEFAULT_PROVIDER_EXECUTION_MODES,
+    ProviderExecutionPolicy,
+)
 from image_downloader.providers.models import ProviderId
 from image_downloader.providers.registry import ProviderRegistry
+from image_downloader.queue.models import QueueState
 from image_downloader.ui.controllers.input_controller import InputController
 from image_downloader.ui.main_window import MainWindow
 from image_downloader.ui.widgets.drop_zone import DropZone
@@ -306,4 +313,90 @@ def test_responsive_splitter_changes_orientation(qt_app) -> None:
     window.resize(1120, 760)
     qt_app.processEvents()
     assert window._splitter.orientation() == Qt.Orientation.Horizontal
+    window.close()
+
+
+def test_access_routing_uses_execution_policy_without_provider_specific_ui_rule(
+    qt_app, monkeypatch
+) -> None:
+    modes = dict(DEFAULT_PROVIDER_EXECUTION_MODES)
+    modes[ProviderId.ASSETWAY] = ProviderExecutionMode.INTERACTIVE_REQUIRED
+    modes[ProviderId.SHUTTERSTOCK] = ProviderExecutionMode.UNVALIDATED
+    policy = ProviderExecutionPolicy(modes)
+    interactive_open = Mock(return_value=True)
+    monkeypatch.setattr(
+        "image_downloader.ui.main_window.open_interactive_provider",
+        interactive_open,
+    )
+    window = MainWindow(execution_policy=policy)
+    managed_open = Mock(return_value=True)
+    window.session_controller.open_provider = managed_open
+
+    window._open_provider(ProviderId.ASSETWAY)
+    window._open_provider(ProviderId.SHUTTERSTOCK)
+
+    interactive_open.assert_called_once()
+    assert interactive_open.call_args.args == (
+        ProviderId.ASSETWAY,
+        "https://plataformaa.assetway.com.br/",
+    )
+    managed_open.assert_called_once_with(ProviderId.SHUTTERSTOCK)
+    window.close()
+
+
+def test_shutterstock_access_uses_default_browser_without_chrome_runtime(
+    qt_app, monkeypatch
+) -> None:
+    from image_downloader.chrome import controller as chrome_controller_module
+
+    runtime_factory = Mock(side_effect=AssertionError("Shutterstock must not create ChromeRuntime"))
+    monkeypatch.setattr(chrome_controller_module, "ChromeRuntime", runtime_factory)
+    interactive_open = Mock(return_value=True)
+    monkeypatch.setattr(
+        "image_downloader.ui.main_window.open_interactive_provider",
+        interactive_open,
+    )
+    window = MainWindow()
+
+    window.access_open_buttons[ProviderId.SHUTTERSTOCK].click()
+
+    interactive_open.assert_called_once_with(
+        ProviderId.SHUTTERSTOCK,
+        "https://www.shutterstock.com/",
+        execution_policy=window.execution_policy,
+    )
+    assert window.session_controller.chrome_runtime is None
+    runtime_factory.assert_not_called()
+    window.close()
+    window.session_controller._shutdown_thread.join(timeout=2.0)
+    qt_app.processEvents()
+    assert window._shutdown_complete
+
+
+def test_selected_shutterstock_item_opens_exact_url_without_queue_transition(
+    qt_app, monkeypatch
+) -> None:
+    url = "https://www.shutterstock.com/image-photo/forest-123?size=large&ref=queue#details"
+    opened = Mock(return_value=True)
+    monkeypatch.setattr(
+        "image_downloader.ui.main_window.open_interactive_provider",
+        opened,
+    )
+    window = MainWindow()
+    result = wait_for_analysis(window, lambda: window.links_edit.setPlainText(url))
+    assert result.snapshot.summary.ready == 1
+    item = window.queue_model.items[0]
+    assert item.state == QueueState.READY
+    assert item.normalized_url == url
+
+    window.queue_table.selectRow(0)
+    assert window.open_item_button.isEnabled()
+    window.open_item_button.click()
+
+    opened.assert_called_once_with(
+        ProviderId.SHUTTERSTOCK,
+        url,
+        execution_policy=window.execution_policy,
+    )
+    assert window.controller.queue_manager.get_item(item.item_id).state == QueueState.READY
     window.close()

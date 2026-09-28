@@ -36,17 +36,28 @@ A arquitetura do projeto foi desenhada para separar responsabilidades claras e p
 
 - Fornecem um contrato comum para reconhecimento, autenticação, preparação e download.
 - Devem manter conectores independentes para Assetway, Shutterstock e Envato.
+- `ProviderRegistry` identifica o provider; `ProviderExecutionPolicy` decide separadamente seu modo de execução.
 - A UI não deve depender diretamente de provider específico.
 
 ### Navegador
 
-- `ChromeRuntime` e `ChromeProcessManager` iniciam e controlam somente processos `Popen` criados pelo aplicativo.
+- `ChromeRuntime` e `ChromeProcessManager` iniciam e controlam somente processos `Popen` criados pelo aplicativo quando a política permite o Chrome gerenciado.
 - `ChromeLocator` procura App Paths do Windows, instalações por usuário/Program Files e PATH.
 - `ChromeProfileFactory` mantém profiles persistentes independentes sob `runtime/chrome_profiles/<provider>/`.
 - O controle CDP usa porta efêmera, `DevToolsActivePort` do profile e endpoints restritos a `127.0.0.1`.
 - O usuário autentica manualmente na janela interativa do Chrome; a UI não captura credenciais.
 - Não há conexão com Chrome externo, reutilização de profiles pessoais, scraping ou downloads.
 - A antiga implementação `browser/` baseada em QtWebEngine está inativa e preservada temporariamente para rollback.
+
+### Política de execução por provider (Etapa 06C)
+
+`ProviderExecutionMode` descreve a estratégia/capacidade do provider sem alterar o `QueueState`. `ProviderRegistry` continua responsável somente por classificação; a política centralizada mapeia `ProviderId` para `AUTOMATED`, `INTERACTIVE_REQUIRED`, `UNVALIDATED` ou `UNAVAILABLE`.
+
+Política inicial: Shutterstock é `INTERACTIVE_REQUIRED`; Assetway e Envato são `UNVALIDATED`; `UNKNOWN` é `UNAVAILABLE`. Um provider interativo continua suportado e seus itens permanecem `READY`. A UI consulta a política para escolher a ação, e o futuro scheduler deverá fazer o mesmo.
+
+Para navegação interativa, `open_interactive_provider(provider, url)` envia a URL original/normalizada ao navegador padrão do Windows via biblioteca padrão. O sistema não conecta via CDP, não inicia Chrome gerenciado para essa ação e não acessa o profile normal. Query e fragmento são preservados. O ChromeRuntime da Etapa 06B permanece disponível para providers que venham a ser validados para esse mecanismo.
+
+Não são adotadas técnicas para mascarar automação ou contornar proteções anti-bot. A estratégia de acesso/download será validada provider por provider.
 
 ### Downloads
 
@@ -146,3 +157,11 @@ Argumentos usados: `--user-data-dir`, `--remote-debugging-port=0`, `--remote-deb
 O fechamento tenta `Browser.close`, aguarda o handle `Popen` e somente em timeout chama `terminate`/`kill` nesse handle específico. Não usa seleção por nome de processo nem `taskkill`; o Chrome gerencia seus subprocessos ao fechar normalmente. A limpeza fecha primeiro o processo próprio e apaga somente a pasta do provider selecionado.
 
 Os módulos `browser/` QtWebEngine permanecem como legado de rollback, mas o import/fluxo ativo da aplicação não os carrega ou instancia. A aprovação funcional de compatibilidade do site depende do teste manual no Chrome real; o smoke automatizado usa apenas profile temporário e `about:blank`.
+
+## Estratégia por provider (Etapa 06C)
+
+O modo de execução não é estado da fila e não é duplicado em `QueueItem`; os consumidores consultam a política pelo provider. Providers conhecidos permanecem `READY`; somente `UNKNOWN` continua `BLOCKED` pela regra preexistente de provider não suportado.
+
+Shutterstock exige interação legítima do usuário. A UI abre o item selecionado no navegador padrão usando `QueueItem.normalized_url`, sem modificar o item ou marcar conclusão. A ação de Acessos abre a página inicial da mesma forma. “Limpar acesso” não opera sobre o profile pessoal.
+
+Assetway e Envato continuam na navegação Chrome gerenciada existente, porém com estratégia `UNVALIDATED`; nenhum deles é declarado automatizado. A infraestrutura Chrome/CDP permanece separada e disponível. Não há download, scraping, monitoramento de pasta, extensão, Native Messaging ou automação de provider nesta etapa.

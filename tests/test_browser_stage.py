@@ -27,6 +27,7 @@ from image_downloader.browser.session_models import (
 from image_downloader.chrome.process_manager import ChromeProcessManager
 from image_downloader.chrome.profile_factory import ChromeProfileFactory
 from image_downloader.chrome.runtime import ChromeRuntime
+from image_downloader.providers.capabilities import ProviderExecutionMode
 from image_downloader.providers.models import ProviderId
 from image_downloader.ui.main_window import MainWindow
 
@@ -270,10 +271,18 @@ def test_profile_operations_reject_non_ui_thread(qt_app, tmp_path) -> None:
 def test_main_window_access_rows_start_uninitialized(qt_app) -> None:
     window = MainWindow()
     for provider in (ProviderId.ASSETWAY, ProviderId.SHUTTERSTOCK, ProviderId.ENVATO):
-        assert window.access_status_labels[provider].text() == (
-            "Chrome fechado · Sessão não verificada"
-        )
-        assert window.access_open_buttons[provider].text() == "Abrir"
+        mode = window.execution_policy.mode_for(provider)
+        if mode == ProviderExecutionMode.INTERACTIVE_REQUIRED:
+            assert window.access_status_labels[provider].text() == (
+                "Navegador padrão · Login manual"
+            )
+            assert window.access_open_buttons[provider].text() == "Abrir no navegador"
+            assert not window.access_clear_buttons[provider].isEnabled()
+        else:
+            assert window.access_status_labels[provider].text() == (
+                "Chrome fechado · Sessão não verificada"
+            )
+            assert window.access_open_buttons[provider].text() == "Abrir"
         assert window.access_clear_buttons[provider].text() == "Limpar acesso"
     window.close()
 

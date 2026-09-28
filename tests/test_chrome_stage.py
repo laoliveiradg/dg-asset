@@ -456,18 +456,18 @@ def test_startup_error_is_safe_and_persists_in_ui(qt_app, tmp_path) -> None:
     outcomes: list[bool] = []
 
     def on_finished(operation, provider, success) -> None:
-        if operation == "open" and provider == ProviderId.SHUTTERSTOCK:
+        if operation == "open" and provider == ProviderId.ASSETWAY:
             outcomes.append(success)
             loop.quit()
 
     window.session_controller.operation_finished.connect(on_finished)
     QTimer.singleShot(8000, loop.quit)
-    window._open_provider(ProviderId.SHUTTERSTOCK)
+    window._open_provider(ProviderId.ASSETWAY)
     loop.exec()
     assert outcomes == [False]
-    assert window.access_status_labels[ProviderId.SHUTTERSTOCK].text() == "Erro ao iniciar"
+    assert window.access_status_labels[ProviderId.ASSETWAY].text() == "Erro ao iniciar"
     window.session_controller.refresh_statuses()
-    assert window.access_status_labels[ProviderId.SHUTTERSTOCK].text() == "Erro ao iniciar"
+    assert window.access_status_labels[ProviderId.ASSETWAY].text() == "Erro ao iniciar"
     window.close()
 
 

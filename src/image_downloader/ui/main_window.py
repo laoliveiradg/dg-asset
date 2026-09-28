@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from image_downloader.chrome.config import PROVIDER_NAMES
+from image_downloader.chrome.config import PROVIDER_NAMES, PROVIDER_START_URLS
 from image_downloader.chrome.controller import ChromeSessionController
 from image_downloader.chrome.models import (
     ChromeRuntimeError,
@@ -29,7 +29,17 @@ from image_downloader.chrome.models import (
     ChromeSessionStatus,
 )
 from image_downloader.chrome.runtime import ChromeRuntime
+from image_downloader.providers.capabilities import ProviderExecutionMode
+from image_downloader.providers.execution_policy import (
+    DEFAULT_PROVIDER_EXECUTION_POLICY,
+    ProviderExecutionPolicy,
+)
+from image_downloader.providers.interactive import (
+    InteractiveProviderError,
+    open_interactive_provider,
+)
 from image_downloader.providers.models import ProviderId
+from image_downloader.queue.models import QueueItem, QueueState
 from image_downloader.ui.controllers.input_controller import InputController
 from image_downloader.ui.models.queue_table_model import QueueTableModel
 from image_downloader.ui.widgets.drop_zone import DropZone
@@ -38,10 +48,20 @@ from image_downloader.ui.widgets.drop_zone import DropZone
 class MainWindow(QMainWindow):
     """Collect local PPTX and pasted URLs, then display the unified queue."""
 
-    def __init__(self, *, chrome_runtime: ChromeRuntime | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        chrome_runtime: ChromeRuntime | None = None,
+        execution_policy: ProviderExecutionPolicy = DEFAULT_PROVIDER_EXECUTION_POLICY,
+    ) -> None:
         super().__init__()
+        self.execution_policy = execution_policy
         self.controller = InputController(self)
-        self.session_controller = ChromeSessionController(self, chrome_runtime=chrome_runtime)
+        self.session_controller = ChromeSessionController(
+            self,
+            chrome_runtime=chrome_runtime,
+            execution_policy=execution_policy,
+        )
         self._shutdown_complete = False
         self.queue_model = QueueTableModel(self)
         self.setWindowTitle("Image Downloader")
@@ -51,7 +71,8 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._apply_style()
         for provider in self._provider_order():
-            self._update_session_status(self.session_controller.status(provider))
+            if self.execution_policy.mode_for(provider) == ProviderExecutionMode.UNVALIDATED:
+                self._update_session_status(self.session_controller.status(provider))
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -122,11 +143,16 @@ class MainWindow(QMainWindow):
         self.access_clear_buttons: dict[ProviderId, QPushButton] = {}
 
         for row_index, provider in enumerate(self._provider_order()):
+            mode = self.execution_policy.mode_for(provider)
             provider_label = QLabel(PROVIDER_NAMES[provider])
             provider_label.setMinimumWidth(150)
-            status_label = QLabel("Não iniciada")
+            status_label = QLabel(self._execution_status_text(mode))
             status_label.setObjectName("sessionStatus")
-            open_button = QPushButton("Abrir")
+            open_button = QPushButton(
+                "Abrir no navegador"
+                if mode == ProviderExecutionMode.INTERACTIVE_REQUIRED
+                else "Abrir"
+            )
             open_button.setObjectName("accessOpenButton")
             open_button.setToolTip(f"Abrir o acesso a {PROVIDER_NAMES[provider]} nesta aplicação")
             open_button.setAccessibleName(f"Abrir acesso a {PROVIDER_NAMES[provider]}")
@@ -135,6 +161,14 @@ class MainWindow(QMainWindow):
             clear_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
             clear_button.setToolTip(f"Limpar somente a sessão local de {PROVIDER_NAMES[provider]}")
             clear_button.setAccessibleName(f"Limpar acesso a {PROVIDER_NAMES[provider]}")
+            clear_button.setEnabled(mode == ProviderExecutionMode.UNVALIDATED)
+            open_button.setEnabled(
+                mode
+                in {
+                    ProviderExecutionMode.INTERACTIVE_REQUIRED,
+                    ProviderExecutionMode.UNVALIDATED,
+                }
+            )
 
             open_button.clicked.connect(
                 lambda checked=False, selected_provider=provider: self._open_provider(
@@ -240,6 +274,12 @@ class MainWindow(QMainWindow):
         self.queue_table.setAccessibleName("Itens da fila")
         layout.addWidget(self.queue_table, 1)
 
+        self.open_item_button = QPushButton("Abrir no navegador", panel)
+        self.open_item_button.setObjectName("openItemButton")
+        self.open_item_button.setEnabled(False)
+        self.open_item_button.clicked.connect(self._open_selected_queue_item)
+        layout.addWidget(self.open_item_button, 0, Qt.AlignmentFlag.AlignRight)
+
         self.empty_label = QLabel("Nenhuma URL na fila.")
         self.empty_label.setObjectName("emptyLabel")
         layout.addWidget(self.empty_label)
@@ -260,6 +300,9 @@ class MainWindow(QMainWindow):
         self.session_controller.status_changed.connect(self._update_session_status)
         self.session_controller.clear_finished.connect(self._on_session_clear_finished)
         self.session_controller.shutdown_finished.connect(self._finish_shutdown)
+        self.queue_table.selectionModel().selectionChanged.connect(
+            lambda *_: self._update_selected_item_action()
+        )
 
     def _select_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -279,6 +322,7 @@ class MainWindow(QMainWindow):
 
     def _apply_snapshot(self, snapshot) -> None:
         self.queue_model.set_items(snapshot.items)
+        self._update_selected_item_action()
         summary = snapshot.summary
         self.summary_values["total"].setText(str(summary.total))
         self.summary_values["assetway"].setText(
@@ -306,6 +350,24 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Nenhuma URL encontrada em {elapsed:.0f} ms.")
 
     def _open_provider(self, provider: ProviderId) -> None:
+        mode = self.execution_policy.mode_for(provider)
+        if mode == ProviderExecutionMode.INTERACTIVE_REQUIRED:
+            try:
+                opened = open_interactive_provider(
+                    provider,
+                    PROVIDER_START_URLS[provider],
+                    execution_policy=self.execution_policy,
+                )
+            except InteractiveProviderError:
+                opened = False
+            if not opened:
+                self.status_label.setText(
+                    f"Não foi possível abrir o acesso a {PROVIDER_NAMES[provider]}."
+                )
+            return
+        if mode != ProviderExecutionMode.UNVALIDATED:
+            self.status_label.setText(f"Acesso indisponível para {PROVIDER_NAMES[provider]}.")
+            return
         try:
             self.session_controller.open_provider(provider)
         except ChromeRuntimeError:
@@ -314,6 +376,8 @@ class MainWindow(QMainWindow):
             )
 
     def _confirm_clear_provider(self, provider: ProviderId) -> None:
+        if self.execution_policy.mode_for(provider) != ProviderExecutionMode.UNVALIDATED:
+            return
         answer = QMessageBox.question(
             self,
             "Limpar acesso",
@@ -346,6 +410,8 @@ class MainWindow(QMainWindow):
             )
 
     def _update_session_status(self, status: ChromeSessionStatus) -> None:
+        if self.execution_policy.mode_for(status.provider) != ProviderExecutionMode.UNVALIDATED:
+            return
         if status.state == ChromeSessionState.ERROR:
             label_text = "Erro ao iniciar" if status.reason == "chrome_start_failed" else "Erro"
         elif status.state == ChromeSessionState.CHECKING:
@@ -368,6 +434,56 @@ class MainWindow(QMainWindow):
         label.setToolTip(
             "A autenticação permanece não verificada até uma validação específica do provider."
         )
+
+    def _update_selected_item_action(self) -> None:
+        item = self._selected_queue_item()
+        self.open_item_button.setEnabled(
+            item is not None
+            and item.state == QueueState.READY
+            and self.execution_policy.mode_for(item.provider)
+            == ProviderExecutionMode.INTERACTIVE_REQUIRED
+        )
+
+    def _open_selected_queue_item(self) -> None:
+        item = self._selected_queue_item()
+        if (
+            item is None
+            or item.state != QueueState.READY
+            or self.execution_policy.mode_for(item.provider)
+            != ProviderExecutionMode.INTERACTIVE_REQUIRED
+        ):
+            return
+        try:
+            opened = open_interactive_provider(
+                item.provider,
+                item.normalized_url,
+                execution_policy=self.execution_policy,
+            )
+        except InteractiveProviderError:
+            opened = False
+        if opened:
+            self.status_label.setText("Item aberto no navegador padrão.")
+        else:
+            self.status_label.setText("Não foi possível abrir o item no navegador padrão.")
+
+    def _selected_queue_item(self) -> QueueItem | None:
+        selected_rows = self.queue_table.selectionModel().selectedRows()
+        if not selected_rows:
+            return None
+        row = selected_rows[0].row()
+        if not 0 <= row < len(self.queue_model.items):
+            return None
+        return self.queue_model.items[row]
+
+    @staticmethod
+    def _execution_status_text(mode: ProviderExecutionMode) -> str:
+        if mode == ProviderExecutionMode.INTERACTIVE_REQUIRED:
+            return "Navegador padrão · Login manual"
+        if mode == ProviderExecutionMode.AUTOMATED:
+            return "Automação validada"
+        if mode == ProviderExecutionMode.UNAVAILABLE:
+            return "Indisponível"
+        return "Chrome fechado · Sessão não verificada"
 
     @staticmethod
     def _provider_order() -> tuple[ProviderId, ...]:
