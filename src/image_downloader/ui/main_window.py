@@ -21,10 +21,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from image_downloader.browser.browser_dialog import PROVIDER_NAMES
-from image_downloader.browser.controller import SessionController
-from image_downloader.browser.session_manager import SessionManager
-from image_downloader.browser.session_models import SessionState, SessionStatus
+from image_downloader.chrome.config import PROVIDER_NAMES
+from image_downloader.chrome.controller import ChromeSessionController
+from image_downloader.chrome.models import (
+    ChromeRuntimeError,
+    ChromeSessionState,
+    ChromeSessionStatus,
+)
+from image_downloader.chrome.runtime import ChromeRuntime
 from image_downloader.providers.models import ProviderId
 from image_downloader.ui.controllers.input_controller import InputController
 from image_downloader.ui.models.queue_table_model import QueueTableModel
@@ -34,10 +38,11 @@ from image_downloader.ui.widgets.drop_zone import DropZone
 class MainWindow(QMainWindow):
     """Collect local PPTX and pasted URLs, then display the unified queue."""
 
-    def __init__(self, *, session_manager: SessionManager | None = None) -> None:
+    def __init__(self, *, chrome_runtime: ChromeRuntime | None = None) -> None:
         super().__init__()
         self.controller = InputController(self)
-        self.session_controller = SessionController(self, session_manager=session_manager)
+        self.session_controller = ChromeSessionController(self, chrome_runtime=chrome_runtime)
+        self._shutdown_complete = False
         self.queue_model = QueueTableModel(self)
         self.setWindowTitle("Image Downloader")
         self.setMinimumSize(780, 680)
@@ -46,7 +51,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._apply_style()
         for provider in self._provider_order():
-            self._update_session_status(self.session_controller.session_manager.status(provider))
+            self._update_session_status(self.session_controller.status(provider))
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -254,6 +259,7 @@ class MainWindow(QMainWindow):
         self.controller.analysis_finished.connect(self._show_analysis_time)
         self.session_controller.status_changed.connect(self._update_session_status)
         self.session_controller.clear_finished.connect(self._on_session_clear_finished)
+        self.session_controller.shutdown_finished.connect(self._finish_shutdown)
 
     def _select_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -302,7 +308,7 @@ class MainWindow(QMainWindow):
     def _open_provider(self, provider: ProviderId) -> None:
         try:
             self.session_controller.open_provider(provider)
-        except Exception:
+        except ChromeRuntimeError:
             self.status_label.setText(
                 f"Não foi possível abrir o acesso a {PROVIDER_NAMES[provider]}."
             )
@@ -317,11 +323,12 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.access_open_buttons[provider].setEnabled(False)
-        self.access_clear_buttons[provider].setEnabled(False)
         try:
-            self.session_controller.clear_provider(provider)
-        except Exception:
+            submitted = self.session_controller.clear_provider(provider)
+            if not submitted:
+                self.access_open_buttons[provider].setEnabled(True)
+                self.access_clear_buttons[provider].setEnabled(True)
+        except ChromeRuntimeError:
             self.access_open_buttons[provider].setEnabled(True)
             self.access_clear_buttons[provider].setEnabled(True)
             self.status_label.setText(
@@ -332,42 +339,35 @@ class MainWindow(QMainWindow):
         self.access_open_buttons[provider].setEnabled(True)
         self.access_clear_buttons[provider].setEnabled(True)
         if success:
-            status = self.session_controller.status(provider)
-            if status.reason == "previous_profile_cleanup_pending_restart":
-                self.status_label.setText(
-                    f"Acesso novo de {PROVIDER_NAMES[provider]} ativo; "
-                    "a pasta anterior será removida após reiniciar."
-                )
-            else:
-                self.status_label.setText(f"Acesso local de {PROVIDER_NAMES[provider]} limpo.")
+            self.status_label.setText(f"Acesso local de {PROVIDER_NAMES[provider]} limpo.")
         else:
             self.status_label.setText(
                 f"Não foi possível limpar o acesso a {PROVIDER_NAMES[provider]}."
             )
 
-    def _update_session_status(self, status: SessionStatus) -> None:
-        labels = {
-            SessionState.UNINITIALIZED: "Não iniciada",
-            SessionState.UNVERIFIED: "Não verificada",
-            SessionState.AUTHENTICATED: "Conectada",
-            SessionState.LOGIN_REQUIRED: "Login necessário",
-            SessionState.CHECKING: "Limpando acesso...",
-            SessionState.ERROR: "Erro",
-        }
+    def _update_session_status(self, status: ChromeSessionStatus) -> None:
+        if status.state == ChromeSessionState.ERROR:
+            label_text = "Erro ao iniciar" if status.reason == "chrome_start_failed" else "Erro"
+        elif status.state == ChromeSessionState.CHECKING:
+            label_text = (
+                "Iniciando Chrome..."
+                if status.reason == "chrome_starting"
+                else "Limpando profile..."
+            )
+        elif status.chrome_running:
+            label_text = "Chrome aberto · Sessão não verificada"
+        else:
+            label_text = "Chrome fechado · Sessão não verificada"
         label = self.access_status_labels.get(status.provider)
         if label is None:
             return
-        label.setText(labels[status.state])
-        reason_text = {
-            "profile_not_opened": "O perfil será criado ao abrir o acesso.",
-            "login_not_verified": "O login não pode ser confirmado automaticamente.",
-            "retired_profile_cleanup_pending": "Removendo os dados da sessão anterior.",
-            "previous_profile_cleanup_pending_restart": (
-                "O profile anterior está bloqueado pelo Chromium; a remoção será repetida "
-                "após reiniciar a aplicação."
-            ),
-        }.get(status.reason, status.reason.replace("_", " "))
-        label.setToolTip(reason_text)
+        is_busy = status.state == ChromeSessionState.CHECKING
+        self.access_open_buttons[status.provider].setEnabled(not is_busy)
+        self.access_clear_buttons[status.provider].setEnabled(not is_busy)
+        label.setText(label_text)
+        label.setToolTip(
+            "A autenticação permanece não verificada até uma validação específica do provider."
+        )
 
     @staticmethod
     def _provider_order() -> tuple[ProviderId, ...]:
@@ -383,8 +383,17 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
 
     def closeEvent(self, event) -> None:
+        if self._shutdown_complete:
+            super().closeEvent(event)
+            return
+        event.ignore()
+        self.setEnabled(False)
+        self.status_label.setText("Encerrando o Chrome gerenciado...")
         self.session_controller.shutdown()
-        super().closeEvent(event)
+
+    def _finish_shutdown(self) -> None:
+        self._shutdown_complete = True
+        self.close()
 
     def _apply_style(self) -> None:
         self.setStyleSheet(

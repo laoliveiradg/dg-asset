@@ -1,4 +1,4 @@
-"""Own provider-isolated persistent QtWebEngine profiles and their lifecycle."""
+"""LEGACY INACTIVE: QtWebEngine session manager retained for rollback only."""
 
 from __future__ import annotations
 

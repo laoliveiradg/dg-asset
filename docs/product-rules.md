@@ -14,4 +14,4 @@
 
 ## Escopo desta etapa
 
-A Etapa 06 implementa somente acesso manual aos sites em QtWebEngine, com profile persistente separado por provider e limpeza seletiva. Não há captura de credenciais, autenticação automática, scraping, downloads, seleção de qualidade, ZIP ou automação de sites.
+A Etapa 06B troca o mecanismo ativo de navegação por Chrome real gerenciado em modo interativo, com CDP local e profile persistente isolado por provider. O usuário realiza login manualmente. Não há captura de credenciais, autenticação automática, scraping, downloads, seleção de qualidade, ZIP, stealth ou automação de sites.

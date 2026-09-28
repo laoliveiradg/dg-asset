@@ -1,4 +1,4 @@
-"""Provider-specific session validation contract and conservative default."""
+"""LEGACY INACTIVE: QtWebEngine session validator retained for rollback only."""
 
 from __future__ import annotations
 

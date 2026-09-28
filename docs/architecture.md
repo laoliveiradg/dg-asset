@@ -40,10 +40,13 @@ A arquitetura do projeto foi desenhada para separar responsabilidades claras e p
 
 ### Navegador
 
-- `SessionManager` possui profiles persistentes independentes para Assetway, Shutterstock e Envato Elements.
-- `ProfileFactory` resolve diretórios determinísticos sob `runtime/browser_profiles/<provider>/`.
-- `BrowserDialog` apresenta o site em `QWebEngineView` com o profile correspondente; o usuário realiza login e 2FA diretamente no site.
-- A camada não captura senha, cookies ou tokens e não depende da fila nem da lógica de download.
+- `ChromeRuntime` e `ChromeProcessManager` iniciam e controlam somente processos `Popen` criados pelo aplicativo.
+- `ChromeLocator` procura App Paths do Windows, instalações por usuário/Program Files e PATH.
+- `ChromeProfileFactory` mantém profiles persistentes independentes sob `runtime/chrome_profiles/<provider>/`.
+- O controle CDP usa porta efêmera, `DevToolsActivePort` do profile e endpoints restritos a `127.0.0.1`.
+- O usuário autentica manualmente na janela interativa do Chrome; a UI não captura credenciais.
+- Não há conexão com Chrome externo, reutilização de profiles pessoais, scraping ou downloads.
+- A antiga implementação `browser/` baseada em QtWebEngine está inativa e preservada temporariamente para rollback.
 
 ### Downloads
 
@@ -133,3 +136,13 @@ Estados disponíveis: `UNINITIALIZED`, `UNVERIFIED`, `AUTHENTICATED`, `LOGIN_REQ
 As operações que criam ou manipulam `QWebEngineProfile`, `QWebEnginePage` e `QWebEngineView` executam na thread principal, conforme as restrições do QtWebEngine. Em contraste, parsing de PPTX continua nos workers da Etapa 05. A limpeza fecha os diálogos, aposenta a geração do provider, cria uma geração vazia e tenta remover a antiga em worker sem acessar objetos QtWebEngine. Se o Windows mantiver arquivos Chromium bloqueados, a exclusão é repetida ao iniciar a aplicação seguinte e a UI informa a pendência.
 
 Senhas não são recebidas nem armazenadas pelo aplicativo; login e 2FA ocorrem diretamente na página web. Logs contêm provider, estado e tempos, nunca URLs de navegação, cookies, tokens, headers ou conteúdo de páginas. Nenhum comportamento de download é conectado ao navegador nesta etapa.
+
+## Chrome gerenciado (Etapa 06B)
+
+`ChromeSessionController` agenda abertura e limpeza em workers Qt; `ChromeRuntime` mantém status conservador e delega o processo a `ChromeProcessManager`. O executável é localizado sem instalação automática. Cada provider tem um diretório próprio dentro de `runtime/chrome_profiles/`; antes de iniciar, o runtime recusa profiles que já contenham `DevToolsActivePort`, pois ownership não pode ser provado. A URL do provider só é enviada após o processo iniciado pelo app estar vivo e a porta local CDP ser validada.
+
+Argumentos usados: `--user-data-dir`, `--remote-debugging-port=0`, `--remote-debugging-address=127.0.0.1`, `--no-first-run` e `--no-default-browser-check`. Não são usados argumentos stealth, certificados ignorados, user-agent falso ou modo headless. CDP valida host, porta e caminho WebSocket antes de enviar comandos; HTTP usa proxy desligado para loopback.
+
+O fechamento tenta `Browser.close`, aguarda o handle `Popen` e somente em timeout chama `terminate`/`kill` nesse handle específico. Não usa seleção por nome de processo nem `taskkill`; o Chrome gerencia seus subprocessos ao fechar normalmente. A limpeza fecha primeiro o processo próprio e apaga somente a pasta do provider selecionado.
+
+Os módulos `browser/` QtWebEngine permanecem como legado de rollback, mas o import/fluxo ativo da aplicação não os carrega ou instancia. A aprovação funcional de compatibilidade do site depende do teste manual no Chrome real; o smoke automatizado usa apenas profile temporário e `about:blank`.

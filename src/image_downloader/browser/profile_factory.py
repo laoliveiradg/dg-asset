@@ -1,4 +1,4 @@
-"""Stable, provider-isolated QtWebEngine profile construction."""
+"""LEGACY INACTIVE: QtWebEngine profile factory retained for rollback only."""
 
 from __future__ import annotations
 

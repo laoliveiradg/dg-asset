@@ -1,4 +1,4 @@
-"""Embedded provider website dialog using the provider's persistent profile."""
+"""LEGACY INACTIVE: QtWebEngine provider dialog retained for rollback only."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ PROVIDER_NAMES = {
 
 
 class BrowserDialog(QDialog):
-    """Normal interactive provider web view; credentials are handled by the site."""
+    """Legacy QtWebEngine view; the active UI uses managed Google Chrome instead."""
 
     presented = Signal(object, float)
 

@@ -79,4 +79,4 @@ O desenvolvimento será realizado em fases separadas. Cada fase deve ser autoriz
 
 Nenhuma fase pode avançar automaticamente para a próxima sem autorização e validação explícitas.
 
-Etapas 01 a 05 foram concluídas. A Etapa 06 está autorizada e se limita à infraestrutura de sessões persistentes com login manual em QtWebEngine. A Etapa 07 não está autorizada por esta tarefa.
+Etapas 01 a 06 foram concluídas. A Etapa 06B está autorizada para migrar o navegador ativo a Chrome próprio gerenciado por CDP, preservando QtWebEngine como legado inativo. A Etapa 07 não está autorizada por esta tarefa.

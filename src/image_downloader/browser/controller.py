@@ -1,4 +1,4 @@
-"""Coordinate provider access dialogs with the session manager."""
+"""LEGACY INACTIVE: QtWebEngine access controller retained for rollback only."""
 
 from __future__ import annotations
 

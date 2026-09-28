@@ -24,6 +24,9 @@ from image_downloader.browser.session_models import (
     SessionStatus,
     UnsupportedSessionProviderError,
 )
+from image_downloader.chrome.process_manager import ChromeProcessManager
+from image_downloader.chrome.profile_factory import ChromeProfileFactory
+from image_downloader.chrome.runtime import ChromeRuntime
 from image_downloader.providers.models import ProviderId
 from image_downloader.ui.main_window import MainWindow
 
@@ -267,7 +270,9 @@ def test_profile_operations_reject_non_ui_thread(qt_app, tmp_path) -> None:
 def test_main_window_access_rows_start_uninitialized(qt_app) -> None:
     window = MainWindow()
     for provider in (ProviderId.ASSETWAY, ProviderId.SHUTTERSTOCK, ProviderId.ENVATO):
-        assert window.access_status_labels[provider].text() == "Não iniciada"
+        assert window.access_status_labels[provider].text() == (
+            "Chrome fechado · Sessão não verificada"
+        )
         assert window.access_open_buttons[provider].text() == "Abrir"
         assert window.access_clear_buttons[provider].text() == "Limpar acesso"
     window.close()
@@ -278,12 +283,15 @@ def test_clear_access_requires_confirmation_and_targets_one_provider(
     tmp_path,
     monkeypatch,
 ) -> None:
-    manager = SessionManager(runtime_root=tmp_path / "runtime")
-    window = MainWindow(session_manager=manager)
-    manager.profile_for_provider(ProviderId.ASSETWAY)
-    manager.profile_for_provider(ProviderId.ENVATO)
-    assetway_generation = manager.profile_paths(ProviderId.ASSETWAY).generation
-    envato_paths = manager.profile_paths(ProviderId.ENVATO)
+    process_manager = ChromeProcessManager(
+        profile_factory=ChromeProfileFactory(tmp_path / "runtime")
+    )
+    runtime = ChromeRuntime(process_manager=process_manager)
+    window = MainWindow(chrome_runtime=runtime)
+    assetway_paths = runtime.profile_factory.ensure_profile(ProviderId.ASSETWAY)
+    envato_paths = runtime.profile_factory.ensure_profile(ProviderId.ENVATO)
+    (assetway_paths.user_data_dir / "test-marker").write_text("marker", encoding="utf-8")
+    (envato_paths.user_data_dir / "test-marker").write_text("envato", encoding="utf-8")
     confirmations: list[str] = []
 
     def confirm(parent, title, message, buttons, default_button):
@@ -292,14 +300,16 @@ def test_clear_access_requires_confirmation_and_targets_one_provider(
 
     monkeypatch.setattr(QMessageBox, "question", staticmethod(confirm))
     loop = QEventLoop()
-    manager.clear_finished.connect(lambda provider, success: loop.quit())
+    window.session_controller.clear_finished.connect(lambda provider, success: loop.quit())
     QTimer.singleShot(8000, loop.quit)
     window._confirm_clear_provider(ProviderId.ASSETWAY)
     loop.exec()
 
     assert confirmations == ["Limpar somente a sessão local de Assetway?"]
-    assert manager.profile_paths(ProviderId.ASSETWAY).generation > assetway_generation
-    assert manager.profile_paths(ProviderId.ENVATO) == envato_paths
+    active_assetway_paths = runtime.profile_factory.paths_for(ProviderId.ASSETWAY)
+    assert active_assetway_paths.user_data_dir.exists()
+    assert not (active_assetway_paths.user_data_dir / "test-marker").exists()
+    assert (envato_paths.user_data_dir / "test-marker").read_text(encoding="utf-8") == "envato"
     assert window.access_open_buttons[ProviderId.ASSETWAY].isEnabled()
     window.close()
 

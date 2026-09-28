@@ -32,3 +32,14 @@ QtWebEngine exige que seus profiles, pages e views vivam na thread principal. Wo
 ## Limites desta etapa
 
 Não há validação definitiva de login, extração de assets, scraping, automação, download ou transferência de sessão de outro navegador.
+
+## Chrome gerenciado (Etapa 06B)
+
+- Somente o executável encontrado localmente é iniciado; o aplicativo nunca conecta a uma instância Chrome preexistente.
+- `--user-data-dir` aponta exclusivamente para `runtime/chrome_profiles/<provider>/`; nenhum profile pessoal é lido, copiado ou alterado.
+- Se `DevToolsActivePort` já existir antes de iniciar, a operação falha com aviso seguro em vez de tentar anexar-se a um browser desconhecido.
+- A porta CDP é efêmera e o browser recebe `--remote-debugging-address=127.0.0.1`. Tanto o endpoint HTTP quanto os WebSockets validam loopback; a consulta HTTP não usa proxies.
+- Logs contêm provider, PID próprio, status e tempos. Não registram cookies, tokens, URLs de páginas, HTML ou formulários.
+- O encerramento usa o handle `Popen` guardado pelo manager e nunca procura processos por nome ou encerra Chrome externo.
+- A presença de cookies nunca significa `AUTHENTICATED`; o estado continua `UNVERIFIED`.
+- QtWebEngine permanece no código como legado inativo para rollback; a importação ativa do app foi testada para não carregar os módulos QtWebEngine.

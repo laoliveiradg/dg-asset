@@ -48,7 +48,7 @@ Extração de PPTX/texto, classificação e atualização do `QueueManager` roda
 
 O editor de texto usa debounce de 300 ms. A geração do lote e a geração do texto impedem commit de análise obsoleta; limpar invalida pedidos ativos. `AnalysisResult` registra tempo total de análise, extração, classificação, commit da fila e latência até o slot de atualização da UI. A latência de texto inclui o debounce; o tempo de análise não.
 
-## Sessões QtWebEngine (Etapa 06)
+## Sessões QtWebEngine (Etapa 06, legado)
 
 Profiles, pages e views são criados e manipulados na thread principal. O tempo local registra criação de profile e apresentação do diálogo até `showEvent`; não inclui latência de rede nem carregamento completo do site. A limpeza do profile antigo usa `QThreadPool` somente depois do encerramento dos objetos QtWebEngine. Memória é reportada apenas como aproximação do processo principal quando a medição nativa do Windows estiver disponível; processos renderer não são agregados.
 
@@ -61,6 +61,10 @@ Medição local em Windows, Python 3.14/PySide6 6.11.2, offscreen, sem navegar a
 | Envato Elements | 62 ms | 78 ms |
 
 O working set do processo principal passou de 48,7 MiB para 123,2 MiB (+74,5 MiB) após abrir um profile e diálogo. Esse número não inclui processos renderer e é somente uma aproximação; não foi adicionada dependência para medir memória.
+
+## Chrome gerenciado (Etapa 06B)
+
+O runtime instrumenta localização/versão do Chrome, preparação do profile, criação de processo, espera por `DevToolsActivePort`, conexão CDP, abertura do target e encerramento. Startup e CDP rodam em workers para que a thread da UI não aguarde o processo. A medição funcional usa `about:blank`; o carregamento dos providers fica para validação manual.
 
 ## Limites da etapa atual
 

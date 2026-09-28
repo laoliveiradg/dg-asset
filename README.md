@@ -4,16 +4,17 @@ Aplicação desktop local para Windows para automatizar o download de imagens us
 
 ## Etapa atual
 
-Etapa 06: preparação da fila e sessões locais com login manual. A aplicação permite:
+Etapa 06B: preparação da fila e sessões locais por Google Chrome gerenciado. A aplicação permite:
 
 - arrastar ou selecionar apresentações `.pptx`;
 - colar texto com uma ou várias URLs;
 - analisar entradas automaticamente em worker Qt;
 - visualizar providers, itens não suportados e origens consolidadas;
 - limpar o lote e começar outro;
-- abrir Assetway, Shutterstock e Envato em áreas QtWebEngine com profiles separados e persistentes.
+- abrir Assetway, Shutterstock e Envato no Chrome real com profiles separados e persistentes;
+- conectar somente à instância própria pelo Chrome DevTools Protocol em localhost.
 
-O parsing e a classificação são locais. O navegador só acessa o site quando o usuário abre um provider. Senhas não são capturadas ou armazenadas; não há downloads, scraping, ZIP ou automação de sites.
+O parsing e a classificação são locais. Sites só são acessados quando o usuário abre um provider. O login é manual; senhas não são capturadas ou armazenadas. Não há downloads, scraping, ZIP ou automação de sites.
 
 ## Organização
 
@@ -32,4 +33,4 @@ pip install -e .[dev]
 python -m image_downloader
 ```
 
-O texto colado é analisado após um debounce de 300 ms. Profiles vivem em `runtime/browser_profiles/` e não são versionados. O status permanece “Não verificada” até existir validação segura específica do provider.
+O texto colado é analisado após um debounce de 300 ms. Profiles Chrome vivem em `runtime/chrome_profiles/` e não são versionados. A sessão permanece não verificada até existir validação segura específica do provider. A antiga implementação QtWebEngine está mantida apenas como legado inativo.
