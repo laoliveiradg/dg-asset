@@ -32,7 +32,7 @@ from image_downloader.providers.models import ProviderId
 from image_downloader.providers.registry import ProviderRegistry
 from image_downloader.queue.models import QueueError, QueueState
 from image_downloader.ui.controllers.input_controller import InputController
-from image_downloader.ui.main_window import MainWindow
+from image_downloader.ui.main_window import BatchUiResult, MainWindow
 from image_downloader.ui.widgets.drop_zone import DropZone
 from image_downloader.ui.workers.input_worker import AnalysisRequest, InputSource
 
@@ -75,9 +75,30 @@ def wait_for_analysis(window: MainWindow, action, timeout_ms: int = 8000):
     return results[-1]
 
 
+def realistic_mixed_urls() -> str:
+    urls = [
+        *(
+            "https://plataformaa.assetway.com.br/p/acervo/search?modal=asset&assetId="
+            f"{65000 + index}"
+            for index in range(7)
+        ),
+        *(
+            f"https://www.shutterstock.com/image-photo/sample-{2725068401 + index}"
+            for index in range(6)
+        ),
+        "https://app.envato.com/photos/3e33fbad-d417-4368-9778-8c89c416cbf1",
+        "https://elements.envato.com/sample-item-ABC1234",
+        *(f"https://example.com/unsupported-{index}" for index in range(3)),
+    ]
+    return "\n".join(urls)
+
+
 def test_main_window_starts_with_functional_controls(qt_app) -> None:
     window = MainWindow()
-    assert window.windowTitle() == "Image Downloader"
+    assert window.windowTitle() == "Asset"
+    assert window.brand_title.text() == "Asset"
+    assert window.brand_logo.pixmap() is not None
+    assert not window.brand_logo.pixmap().isNull()
     assert window.drop_zone.acceptDrops()
     assert window.links_edit.placeholderText() == "Cole um ou vários links aqui..."
     assert window.queue_model.rowCount() == 0
@@ -516,7 +537,7 @@ def test_simulated_assetway_download_runs_off_ui_thread(qt_app, monkeypatch) -> 
     progress_poll.setInterval(5)
     progress_poll.timeout.connect(
         lambda: progress_loop.quit()
-        if window.status_label.text() == "Preparando downloads..."
+        if window.download_progress_label.text() == "Preparando downloads..."
         else None
     )
     progress_poll.start()
@@ -524,7 +545,7 @@ def test_simulated_assetway_download_runs_off_ui_thread(qt_app, monkeypatch) -> 
     progress_loop.exec()
     progress_poll.stop()
     assert worker_thread_ids and worker_thread_ids[0] != main_thread_id
-    assert window.status_label.text() == "Preparando downloads..."
+    assert window.status_label.text() == "Processando..."
     assert window.download_progress_label.text() == "Preparando downloads..."
     assert window.controller.queue_manager.get_item(item.item_id).state == QueueState.PROCESSING
     assert not window.download_item_button.isEnabled()
@@ -536,6 +557,20 @@ def test_simulated_assetway_download_runs_off_ui_thread(qt_app, monkeypatch) -> 
     loop.exec()
     assert window.controller.queue_manager.get_item(item.item_id).state == QueueState.FAILED
     assert window.controller.queue_manager.get_item(item.item_id).state == QueueState.FAILED
+    window.close()
+
+
+def test_preprocessing_summary_and_primary_button_use_all_processable_items(qt_app) -> None:
+    window = MainWindow()
+
+    wait_for_analysis(window, lambda: window.links_edit.setPlainText(realistic_mixed_urls()))
+
+    assert window.batch_summary_label.text() == (
+        "18 imagens encontradas\n\n"
+        "7 automáticas · 8 exigirão interação · 3 não suportadas"
+    )
+    assert window.download_item_button.text() == "BAIXAR 15 IMAGENS"
+    assert window.download_item_button.isEnabled()
     window.close()
 
 
@@ -629,7 +664,7 @@ def test_global_action_collects_multiple_assetway_and_continues_to_other_modes(
     loop = QEventLoop()
     poll_timer = QTimer()
     poll_timer.setInterval(10)
-    poll_timer.timeout.connect(lambda: loop.quit() if window._batch_total == 0 else None)
+    poll_timer.timeout.connect(lambda: loop.quit() if window._batch_result is not None else None)
     poll_timer.start()
     QTimer.singleShot(3000, loop.quit)
     loop.exec()
@@ -655,8 +690,68 @@ def test_global_action_collects_multiple_assetway_and_continues_to_other_modes(
         for item in window.controller.queue_manager.list_items()
         if item.provider == ProviderId.ENVATO
     ).state == QueueState.FAILED
-    assert "1 concluídas" in window.download_progress_label.text()
-    assert "3 com falha" in window.download_progress_label.text()
+    assert "1 baixadas" in window.batch_summary_label.text()
+    assert "3 não baixadas" in window.batch_summary_label.text()
+    window.close()
+
+
+def test_final_result_separates_failures_and_shows_friendly_problem_list(qt_app) -> None:
+    window = MainWindow()
+    wait_for_analysis(window, lambda: window.links_edit.setPlainText(realistic_mixed_urls()))
+    supported = [
+        item
+        for item in window.controller.queue_manager.list_items()
+        if item.provider != ProviderId.UNKNOWN
+    ]
+    failure_codes = [
+        "download_action_unverified",
+        "authentication_required",
+        "ambiguous_download",
+        "quality_unverified",
+        "assisted_download_timeout",
+        "assisted_download_invalid",
+        "assisted_download_format_unverified",
+    ]
+    for item in supported[:8]:
+        window.controller.queue_manager.start_processing(item.item_id)
+        window.controller.queue_manager.mark_completed(item.item_id)
+    for item, code in zip(supported[8:], failure_codes, strict=True):
+        window.controller.queue_manager.start_processing(item.item_id)
+        window.controller.queue_manager.mark_failed(
+            item.item_id,
+            QueueError(code, f"Mensagem segura para {code}.", item.provider, True),
+        )
+    window._active_batch_item_ids = [item.item_id for item in supported]
+    window._batch_total = 15
+    window._batch_finished = 15
+    window._batch_completed = 8
+    window._batch_failed = 7
+
+    window._finish_download_batch()
+    assert window._batch_result is not None
+    window._batch_result.zip_created = True
+    window._batch_result.zip_count = 8
+    window._render_batch_result()
+
+    result_text = window.batch_summary_label.text()
+    assert "8 baixadas · 7 não baixadas · 3 não suportadas" in result_text
+    assert "ZIP criado com 8 imagens" in result_text
+    assert "exigirão interação" not in result_text
+    assert window.status_label.text() == "15 imagens processadas."
+    assert window.status_label.text() not in result_text
+    assert window.download_progress_label.isHidden()
+    assert window.download_item_button.text() == "BAIXAR IMAGENS"
+    assert not window.download_item_button.isEnabled()
+    assert window.problems_button.text() == "VER 7 PROBLEMAS"
+
+    window.problems_button.click()
+    problem_text = window.problems_text_label.text()
+    assert "Não foi possível localizar a opção de download." in problem_text
+    assert "É necessário entrar novamente." in problem_text
+    assert "Mais de um arquivo foi detectado" in problem_text
+    assert "Não foi possível confirmar a qualidade original." in problem_text
+    assert all(code not in problem_text for code in failure_codes)
+    window.problems_dialog.close()
     window.close()
 
 
@@ -689,7 +784,7 @@ def test_interactive_completion_advances_without_user_confirmation(
     )
 
     assert advanced == [True]
-    assert window.status_label.text() == "Download recebido. Continuando..."
+    assert window.status_label.text() == "Processando..."
     assert window.download_progress_label.text() == "Download recebido. Continuando..."
     assert window._batch_files == [downloaded]
     window.close()
@@ -723,6 +818,8 @@ def test_clear_resets_progress_and_rejects_stale_download_result(qt_app) -> None
     )
     window._batch_total = 1
     window._batch_failed = 1
+    window._batch_result = BatchUiResult(1, 0, 1, 0)
+    window.problems_button.setVisible(True)
     stale_generation = window._download_generation
 
     window.clear_button.click()
@@ -735,6 +832,11 @@ def test_clear_resets_progress_and_rejects_stale_download_result(qt_app) -> None
     assert window.download_progress_label.text() == "Aguardando imagens para processar."
     assert window._batch_total == 0
     assert window._batch_failed == 0
+    assert window._batch_result is None
+    assert window.problems_button.isHidden()
+    assert window.batch_summary_label.text() == (
+        "0 imagens encontradas\n\n0 automáticas · 0 exigirão interação · 0 não suportadas"
+    )
     window.close()
 
 

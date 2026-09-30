@@ -27,5 +27,5 @@ def test_main_window_starts() -> None:
     window = MainWindow()
 
     assert app is not None
-    assert window.windowTitle() == "Image Downloader"
+    assert window.windowTitle() == "Asset"
     assert window.centralWidget() is not None

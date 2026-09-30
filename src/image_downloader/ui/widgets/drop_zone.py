@@ -24,7 +24,12 @@ class DropZone(QFrame):
         self.setAccessibleName("Área para adicionar apresentações PPTX")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 15, 14, 15)
-        layout.setSpacing(7)
+        layout.setSpacing(6)
+
+        icon = QLabel("+")
+        icon.setObjectName("dropIcon")
+        icon.setFixedSize(38, 38)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         title = QLabel("Arraste apresentações aqui")
         title.setObjectName("dropTitle")
@@ -42,6 +47,7 @@ class DropZone(QFrame):
         self.select_files_button.setAccessibleName("Selecionar arquivos PPTX")
         self.select_files_button.clicked.connect(self.files_selected_requested.emit)
 
+        layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
         layout.addWidget(hint)
         layout.addWidget(self.select_files_button, 0, Qt.AlignmentFlag.AlignCenter)

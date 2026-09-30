@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -15,7 +18,9 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QStyle,
@@ -51,10 +56,22 @@ from image_downloader.providers.models import ProviderId
 from image_downloader.queue.models import QueueError, QueueItem, QueueState
 from image_downloader.ui.controllers.input_controller import InputController
 from image_downloader.ui.models.queue_table_model import QueueTableModel
+from image_downloader.ui.theme import APP_STYLESHEET
 from image_downloader.ui.widgets.drop_zone import DropZone
 from image_downloader.ui.workers.archive_worker import ArchiveWorker
 from image_downloader.ui.workers.assetway_download_worker import AssetwayDownloadWorker
 from image_downloader.ui.workers.assisted_download_worker import AssistedDownloadWorker
+
+
+@dataclass(slots=True)
+class BatchUiResult:
+    total: int
+    completed: int
+    failed: int
+    unsupported: int
+    zip_count: int = 0
+    zip_created: bool = False
+    exported_path: Path | None = None
 
 
 class MainWindow(QMainWindow):
@@ -85,13 +102,16 @@ class MainWindow(QMainWindow):
         self._batch_completed = 0
         self._batch_failed = 0
         self._batch_files: list[Path] = []
+        self._active_batch_item_ids: list[str] = []
+        self._last_batch_failed_item_ids: list[str] = []
+        self._batch_result: BatchUiResult | None = None
         self._archive_worker: ArchiveWorker | None = None
         self._assisted_download_worker: AssistedDownloadWorker | None = None
         self._download_generation = 0
         self.queue_model = QueueTableModel(self)
-        self.setWindowTitle("Image Downloader")
-        self.setMinimumSize(780, 680)
-        self.resize(1180, 820)
+        self.setWindowTitle("Asset")
+        self.setMinimumSize(720, 620)
+        self.resize(1280, 760)
         self._build_ui()
         self._connect_signals()
         self._apply_style()
@@ -103,23 +123,48 @@ class MainWindow(QMainWindow):
         central = QWidget(self)
         central.setObjectName("centralWidget")
         root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(24, 20, 24, 18)
-        root_layout.setSpacing(16)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        header = QHBoxLayout()
+        header_frame = QFrame(central)
+        header_frame.setObjectName("appHeader")
+        header = QHBoxLayout(header_frame)
+        header.setContentsMargins(28, 16, 28, 16)
+        header.setSpacing(12)
+        self.brand_logo = QLabel(header_frame)
+        self.brand_logo.setObjectName("brandLogo")
+        self.brand_logo.setFixedSize(44, 44)
+        self.brand_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.brand_logo.setAccessibleName("Logo Asset")
+        logo_data = (
+            resources.files("image_downloader.ui")
+            .joinpath("assets", "asset-logo.png")
+            .read_bytes()
+        )
+        logo_pixmap = QPixmap()
+        if not logo_pixmap.loadFromData(logo_data, "PNG"):
+            raise RuntimeError("The Asset logo could not be loaded.")
+        self.brand_logo.setPixmap(
+            logo_pixmap.scaled(
+                QSize(44, 44),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        header.addWidget(self.brand_logo)
         title_group = QVBoxLayout()
-        title = QLabel("Image Downloader")
-        title.setObjectName("pageTitle")
-        subtitle = QLabel("Adicione apresentações ou cole links para preparar os arquivos.")
+        title_group.setSpacing(1)
+        self.brand_title = QLabel("Asset")
+        self.brand_title.setObjectName("pageTitle")
+        subtitle = QLabel("Download e organização de ativos")
         subtitle.setObjectName("pageSubtitle")
         subtitle.setWordWrap(True)
-        title_group.addWidget(title)
+        title_group.addWidget(self.brand_title)
         title_group.addWidget(subtitle)
         header.addLayout(title_group, 1)
 
         self.clear_button = QPushButton("Limpar")
         self.clear_button.setObjectName("clearButton")
-        self.clear_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
         self.clear_button.setToolTip("Limpar as entradas e iniciar um novo lote")
         self.clear_button.setAccessibleName("Limpar lote")
         self.settings_button = QPushButton("Acessos")
@@ -128,7 +173,7 @@ class MainWindow(QMainWindow):
         self.settings_button.clicked.connect(self._show_access_settings)
         header.addWidget(self.settings_button, 0, Qt.AlignmentFlag.AlignTop)
         header.addWidget(self.clear_button, 0, Qt.AlignmentFlag.AlignTop)
-        root_layout.addLayout(header)
+        root_layout.addWidget(header_frame)
 
         self.access_dialog = QDialog(self)
         self.access_dialog.setWindowTitle("Configurações · Acessos")
@@ -139,23 +184,43 @@ class MainWindow(QMainWindow):
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setObjectName("contentSplitter")
         self._splitter.setChildrenCollapsible(False)
-        self._splitter.addWidget(self._build_input_panel())
-        self._splitter.addWidget(self._build_queue_panel())
+        self.input_panel = self._build_input_panel()
+        self.queue_panel = self._build_queue_panel()
+        self._splitter.addWidget(self.input_panel)
+        self._splitter.addWidget(self.queue_panel)
         self._splitter.setStretchFactor(0, 4)
         self._splitter.setStretchFactor(1, 6)
-        self._splitter.setSizes([430, 650])
-        root_layout.addWidget(self._splitter, 1)
+        self._splitter.setSizes([450, 750])
+
+        self.content_viewport = QWidget(central)
+        self.content_viewport.setObjectName("contentViewport")
+        content_layout = QVBoxLayout(self.content_viewport)
+        content_layout.setContentsMargins(24, 22, 24, 18)
+        content_layout.setSpacing(12)
+        content_layout.addWidget(self._splitter, 1)
 
         self.warning_label = QLabel()
         self.warning_label.setObjectName("warningLabel")
         self.warning_label.setWordWrap(True)
         self.warning_label.setVisible(False)
-        root_layout.addWidget(self.warning_label)
+        content_layout.addWidget(self.warning_label)
+
+        self.content_scroll = QScrollArea(central)
+        self.content_scroll.setObjectName("contentScroll")
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.content_scroll.setWidget(self.content_viewport)
+        root_layout.addWidget(self.content_scroll, 1)
 
         self.status_label = QLabel("Pronto para receber apresentações ou links.")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setAccessibleName("Status da análise")
-        root_layout.addWidget(self.status_label)
+        status_frame = QFrame(central)
+        status_frame.setObjectName("statusBar")
+        status_layout = QHBoxLayout(status_frame)
+        status_layout.setContentsMargins(28, 8, 28, 8)
+        status_layout.addWidget(self.status_label)
+        root_layout.addWidget(status_frame)
 
         self.setCentralWidget(central)
 
@@ -235,11 +300,16 @@ class MainWindow(QMainWindow):
         panel.setObjectName("panel")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(20, 18, 20, 20)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
         heading = QLabel("Adicionar arquivos e links")
         heading.setObjectName("sectionTitle")
         layout.addWidget(heading)
+
+        hint = QLabel("Use apresentações PPTX, links individuais ou ambos.")
+        hint.setObjectName("sectionHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         self.drop_zone = DropZone(panel)
         layout.addWidget(self.drop_zone)
@@ -262,14 +332,16 @@ class MainWindow(QMainWindow):
         panel.setObjectName("panel")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(20, 18, 20, 20)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
-        heading = QLabel("Imagens encontradas")
-        heading.setObjectName("sectionTitle")
-        layout.addWidget(heading)
+        self.queue_heading = QLabel("Imagens encontradas")
+        self.queue_heading.setObjectName("sectionTitle")
+        layout.addWidget(self.queue_heading)
 
         self.summary_values: dict[str, QLabel] = {}
-        summary_layout = QGridLayout()
+        self.provider_summary_widget = QWidget(panel)
+        summary_layout = QGridLayout(self.provider_summary_widget)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
         summary_layout.setHorizontalSpacing(18)
         summary_layout.setVerticalSpacing(12)
         summary_specs = (
@@ -280,9 +352,10 @@ class MainWindow(QMainWindow):
             ("blocked", "Não suportado"),
         )
         for index, (key, caption) in enumerate(summary_specs):
-            cell = QWidget(panel)
+            cell = QFrame(panel)
+            cell.setObjectName("statCard")
             cell_layout = QVBoxLayout(cell)
-            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setContentsMargins(12, 9, 12, 9)
             cell_layout.setSpacing(2)
             value = QLabel("0")
             value.setObjectName("summaryValue")
@@ -293,12 +366,30 @@ class MainWindow(QMainWindow):
             cell_layout.addWidget(label)
             summary_layout.addWidget(cell, index // 3, index % 3)
             self.summary_values[key] = value
-        layout.addLayout(summary_layout)
+        layout.addWidget(self.provider_summary_widget)
 
         self.batch_summary_label = QLabel("Nenhuma imagem pronta para processamento.")
         self.batch_summary_label.setObjectName("batchSummary")
         self.batch_summary_label.setWordWrap(True)
         layout.addWidget(self.batch_summary_label)
+
+        self.problems_button = QPushButton("VER PROBLEMAS", panel)
+        self.problems_button.setObjectName("problemsButton")
+        self.problems_button.setVisible(False)
+        self.problems_button.clicked.connect(self._show_batch_problems)
+        layout.addWidget(self.problems_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self.problems_dialog = QDialog(self)
+        self.problems_dialog.setWindowTitle("Problemas do processamento")
+        self.problems_dialog.setMinimumWidth(520)
+        problems_layout = QVBoxLayout(self.problems_dialog)
+        self.problems_text_label = QLabel()
+        self.problems_text_label.setWordWrap(True)
+        self.problems_text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        problems_layout.addWidget(self.problems_text_label)
+        close_problems_button = QPushButton("Fechar")
+        close_problems_button.clicked.connect(self.problems_dialog.close)
+        problems_layout.addWidget(close_problems_button, 0, Qt.AlignmentFlag.AlignRight)
 
         self.queue_table = QTableView(panel)
         self.queue_table.setObjectName("queueTable")
@@ -321,7 +412,7 @@ class MainWindow(QMainWindow):
         self.details_button.setCheckable(True)
         self.details_button.toggled.connect(self._toggle_details)
         layout.addWidget(self.details_button, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self.queue_table, 1)
+        layout.addWidget(self.queue_table)
 
         action_heading = QLabel("Downloads")
         action_heading.setObjectName("fieldTitle")
@@ -368,13 +459,20 @@ class MainWindow(QMainWindow):
         layout.addLayout(actions)
         layout.addWidget(self.download_item_button)
 
-        progress_heading = QLabel("Progresso")
-        progress_heading.setObjectName("fieldTitle")
-        layout.addWidget(progress_heading)
+        self.progress_heading = QLabel("Progresso")
+        self.progress_heading.setObjectName("fieldTitle")
+        self.progress_heading.setVisible(False)
+        layout.addWidget(self.progress_heading)
         self.download_progress_label = QLabel("Aguardando um item Assetway selecionado.")
         self.download_progress_label.setObjectName("downloadProgress")
         self.download_progress_label.setWordWrap(True)
+        self.download_progress_label.setVisible(False)
         layout.addWidget(self.download_progress_label)
+        self.batch_progress_bar = QProgressBar(panel)
+        self.batch_progress_bar.setObjectName("batchProgressBar")
+        self.batch_progress_bar.setTextVisible(True)
+        self.batch_progress_bar.setVisible(False)
+        layout.addWidget(self.batch_progress_bar)
         self.assetway_login_button = QPushButton("ENTRAR NO ASSETWAY", panel)
         self.assetway_login_button.setObjectName("assetwayLoginButton")
         self.assetway_login_button.setVisible(False)
@@ -384,6 +482,7 @@ class MainWindow(QMainWindow):
         self.empty_label = QLabel("Nenhuma URL na fila.")
         self.empty_label.setObjectName("emptyLabel")
         layout.addWidget(self.empty_label)
+        layout.addStretch(1)
         return panel
 
     def _connect_signals(self) -> None:
@@ -422,6 +521,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_details(self, visible: bool) -> None:
         self.queue_table.setVisible(visible)
+        self.queue_table.setMinimumHeight(240 if visible else 0)
         self.details_button.setText("Ocultar detalhes" if visible else "Ver detalhes")
 
     def _clear_batch(self) -> None:
@@ -434,9 +534,21 @@ class MainWindow(QMainWindow):
         self._batch_completed = 0
         self._batch_failed = 0
         self._batch_files.clear()
+        self._active_batch_item_ids.clear()
+        self._last_batch_failed_item_ids.clear()
+        self._batch_result = None
         self._download_generation += 1
         self.assetway_login_button.setVisible(False)
+        self.problems_button.setVisible(False)
+        self.problems_dialog.hide()
+        self.batch_progress_bar.setVisible(False)
+        self.provider_summary_widget.setVisible(True)
+        self.queue_heading.setText("Imagens encontradas")
+        self._set_batch_visual_state("empty")
+        self.progress_heading.setVisible(False)
         self.download_progress_label.setText("Aguardando imagens para processar.")
+        self.download_progress_label.setVisible(False)
+        self.status_label.setText("Pronto.")
         self.controller.clear_batch()
 
     def _apply_snapshot(self, snapshot) -> None:
@@ -454,7 +566,6 @@ class MainWindow(QMainWindow):
             )
             if selected_row is not None:
                 self.queue_table.selectRow(selected_row)
-        self._update_selected_item_action()
         summary = snapshot.summary
         self.summary_values["total"].setText(str(summary.total))
         self.summary_values["assetway"].setText(
@@ -465,27 +576,126 @@ class MainWindow(QMainWindow):
         )
         self.summary_values["envato"].setText(str(summary.provider_counts[ProviderId.ENVATO]))
         self.summary_values["blocked"].setText(str(summary.blocked))
+        if self._batch_result is not None and self._processable_ready_items():
+            self._batch_result = None
+            self._last_batch_failed_item_ids.clear()
+        if self._batch_total:
+            self._render_batch_progress()
+        elif self._batch_result is not None:
+            self._render_batch_result()
+        else:
+            self._render_preprocessing_summary(snapshot.items, summary.total, summary.blocked)
+        self._update_selected_item_action()
+        self.empty_label.setVisible(summary.total == 0)
+
+    def _render_preprocessing_summary(
+        self,
+        items: tuple[QueueItem, ...],
+        total: int,
+        unsupported: int,
+    ) -> None:
         automatic = sum(
             self.execution_policy.mode_for(item.provider) == ProviderExecutionMode.AUTOMATED
             and item.state == QueueState.READY
-            for item in snapshot.items
+            for item in items
         )
         interactive = sum(
             self.execution_policy.mode_for(item.provider)
             == ProviderExecutionMode.INTERACTIVE_REQUIRED
-            for item in snapshot.items
+            and item.state == QueueState.READY
+            for item in items
         )
-        unvalidated = sum(
-            self.execution_policy.mode_for(item.provider) == ProviderExecutionMode.UNVALIDATED
-            for item in snapshot.items
-        )
-        unavailable = sum(item.provider == ProviderId.UNKNOWN for item in snapshot.items)
+        self.queue_heading.setText("Imagens encontradas")
+        self.provider_summary_widget.setVisible(True)
+        self._set_batch_visual_state("ready" if automatic + interactive else "empty")
         self.batch_summary_label.setText(
-            f"{summary.total} imagens encontradas · {automatic} prontas para download "
-            f"automático · {interactive} exigem interação · {unvalidated} ainda não "
-            f"validadas · {unavailable} indisponíveis"
+            f"{total} imagens encontradas\n\n"
+            f"{automatic} automáticas · {interactive} exigirão interação · "
+            f"{unsupported} não suportadas"
         )
-        self.empty_label.setVisible(summary.total == 0)
+        self.problems_button.setVisible(False)
+        self.batch_progress_bar.setVisible(False)
+        self.progress_heading.setVisible(False)
+        self.download_progress_label.setVisible(False)
+
+    def _render_batch_progress(self) -> None:
+        self.queue_heading.setText("Baixando imagens")
+        self.provider_summary_widget.setVisible(False)
+        self._set_batch_visual_state("processing")
+        self.batch_summary_label.setText(
+            f"Baixando imagens\n\n{self._batch_finished} de {self._batch_total} concluídas"
+        )
+        self.problems_button.setVisible(False)
+        self.batch_progress_bar.setRange(0, self._batch_total)
+        self.batch_progress_bar.setValue(self._batch_finished)
+        self.batch_progress_bar.setFormat("%v de %m")
+        self.batch_progress_bar.setVisible(True)
+        self.progress_heading.setVisible(True)
+        self.download_progress_label.setVisible(True)
+
+    def _render_batch_result(self) -> None:
+        result = self._batch_result
+        if result is None:
+            return
+        lines = [
+            "Processamento concluído",
+            "",
+            f"{result.completed} baixadas · {result.failed} não baixadas · "
+            f"{result.unsupported} não suportadas",
+        ]
+        if result.zip_created:
+            if result.exported_path is not None:
+                lines.append(f"ZIP salvo em {result.exported_path.parent.name}")
+            else:
+                lines.append(f"ZIP criado com {result.zip_count} imagens")
+        self.queue_heading.setText("Resultado do lote")
+        self.provider_summary_widget.setVisible(False)
+        self._set_batch_visual_state("partial" if result.failed else "success")
+        self.batch_summary_label.setText("\n".join(lines))
+        self.batch_progress_bar.setVisible(False)
+        self.progress_heading.setVisible(False)
+        self.download_progress_label.setVisible(False)
+        self.problems_button.setText(f"VER {result.failed} PROBLEMAS")
+        self.problems_button.setVisible(result.failed > 0)
+
+    def _set_batch_visual_state(self, state: str) -> None:
+        self.batch_summary_label.setProperty("uiState", state)
+        self.batch_summary_label.style().unpolish(self.batch_summary_label)
+        self.batch_summary_label.style().polish(self.batch_summary_label)
+
+    def _show_batch_problems(self) -> None:
+        items = []
+        for item_id in self._last_batch_failed_item_ids:
+            item = self.controller.queue_manager.get_item(item_id)
+            if item.error is None:
+                continue
+            reference = item.asset_reference or "Sem referência"
+            items.append(
+                f"{PROVIDER_NAMES[item.provider]} · {reference}\n"
+                f"{self._friendly_failure_message(item.error)}"
+            )
+        self.problems_text_label.setText("\n\n".join(items) or "Nenhum problema registrado.")
+        self.problems_dialog.show()
+        self.problems_dialog.raise_()
+        self.problems_dialog.activateWindow()
+
+    @staticmethod
+    def _friendly_failure_message(error: QueueError) -> str:
+        messages = {
+            "download_action_unverified": "Não foi possível localizar a opção de download.",
+            "authentication_required": "É necessário entrar novamente.",
+            "ambiguous_download": (
+                "Mais de um arquivo foi detectado e não foi possível identificar o correto."
+            ),
+            "quality_unverified": "Não foi possível confirmar a qualidade original.",
+            "interactive_open_failed": "Não foi possível abrir o item no navegador.",
+            "assisted_download_timeout": "O download não foi recebido no tempo esperado.",
+            "assisted_download_invalid": "O arquivo recebido não é um download final válido.",
+            "assisted_download_format_unverified": (
+                "Não foi possível confirmar o formato do arquivo recebido."
+            ),
+        }
+        return messages.get(error.code, error.safe_message)
 
     def _show_warnings(self, message: str) -> None:
         self.warning_label.setText(message)
@@ -601,6 +811,7 @@ class MainWindow(QMainWindow):
             self._active_download_item_id is not None
             or bool(self._batch_item_ids)
             or self._assetway_session_busy
+            or self._archive_worker is not None
         )
         self.open_item_button.setEnabled(
             item is not None
@@ -628,24 +839,24 @@ class MainWindow(QMainWindow):
         if self.download_item_button.isEnabled():
             self.download_item_button.setText(f"BAIXAR {len(eligible)} IMAGENS")
             self.download_item_button.setToolTip(
-                "Processar automaticamente todas as imagens compatíveis desta etapa"
+                "Processar todas as imagens suportadas deste lote"
             )
             self.download_selection_hint.setText(
-                f"{len(eligible)} itens prontos para download automático."
+                f"{len(eligible)} itens prontos para processamento."
             )
         elif busy:
             self.download_item_button.setText("PROCESSANDO...")
-            self.download_item_button.setToolTip("O processamento automático está em andamento")
+            self.download_item_button.setToolTip("O lote está em processamento")
             self.download_selection_hint.setText(
-                "Processamento automático em andamento. Nenhuma seleção é necessária."
+                "Processamento em andamento. Nenhuma seleção é necessária."
             )
         else:
             self.download_item_button.setText("BAIXAR IMAGENS")
             self.download_item_button.setToolTip(
-                "Não há imagens compatíveis prontas para download automático"
+                "Não há novas imagens suportadas prontas para processamento"
             )
             self.download_selection_hint.setText(
-                "Nenhuma imagem está pronta para download automático nesta etapa."
+                "Nenhuma nova imagem está pronta para processamento."
             )
 
     def _download_selected_assetway_item(self) -> None:
@@ -655,6 +866,9 @@ class MainWindow(QMainWindow):
         if not eligible:
             return
         self._batch_item_ids = [item.item_id for item in eligible]
+        self._active_batch_item_ids = list(self._batch_item_ids)
+        self._last_batch_failed_item_ids.clear()
+        self._batch_result = None
         self._download_generation += 1
         self._batch_total = len(self._batch_item_ids)
         self._batch_finished = 0
@@ -663,6 +877,9 @@ class MainWindow(QMainWindow):
         self._batch_files.clear()
         self.assetway_login_button.setVisible(False)
         self.clear_button.setEnabled(False)
+        self.status_label.setText("Processando...")
+        self.download_progress_label.setText("Preparando downloads...")
+        self._render_batch_progress()
         self._start_next_batch_item()
 
     def _open_assetway_login(self) -> None:
@@ -737,11 +954,12 @@ class MainWindow(QMainWindow):
             )
             self._batch_finished += 1
             self._batch_failed += 1
+            self._render_batch_progress()
             self._start_next_batch_item()
             return
         self._active_download_item_id = item.item_id
         waiting_message = f"Aguardando o download no {PROVIDER_NAMES[item.provider]}..."
-        self.status_label.setText(waiting_message)
+        self.status_label.setText("Processando...")
         self.download_progress_label.setText(waiting_message)
         worker = AssistedDownloadWorker(
             monitor,
@@ -761,6 +979,7 @@ class MainWindow(QMainWindow):
             self._active_download_item_id = None
             self._batch_finished += 1
             self._batch_failed += 1
+            self._render_batch_progress()
             self._start_next_batch_item()
 
     def _finish_download_batch(self) -> None:
@@ -768,22 +987,27 @@ class MainWindow(QMainWindow):
         completed = self._batch_completed
         failed = self._batch_failed
         files = list(self._batch_files)
+        unsupported = self.controller.queue_manager.summary().blocked
+        self._last_batch_failed_item_ids = [
+            item_id
+            for item_id in self._active_batch_item_ids
+            if self.controller.queue_manager.get_item(item_id).state == QueueState.FAILED
+        ]
+        self._batch_result = BatchUiResult(total, completed, failed, unsupported)
         self._batch_item_ids.clear()
+        self._active_batch_item_ids.clear()
         self._batch_total = 0
         self._batch_finished = 0
         self._batch_completed = 0
         self._batch_failed = 0
         self._batch_files.clear()
         if files:
+            self._render_batch_result()
             self._create_batch_archive(files, completed, failed, total)
             return
         self.clear_button.setEnabled(True)
-        message = f"Processamento finalizado: {completed} concluídas"
-        if failed:
-            message += f", {failed} com falha"
-        message += f" de {total}."
-        self.status_label.setText(message)
-        self.download_progress_label.setText(message)
+        self.status_label.setText(f"{total} imagens processadas.")
+        self._render_batch_result()
         self._update_selected_item_action()
 
     def _create_batch_archive(
@@ -794,6 +1018,7 @@ class MainWindow(QMainWindow):
         total: int,
     ) -> None:
         self.download_progress_label.setText("Criando ZIP...")
+        self.download_progress_label.setVisible(True)
         runtime = self.session_controller.ensure_runtime()
         service = BatchArchiveService(runtime.process_manager.profile_factory.runtime_root)
         worker = ArchiveWorker(service, self.controller.batch_id, files)
@@ -823,36 +1048,35 @@ class MainWindow(QMainWindow):
         self._archive_worker = None
         self.clear_button.setEnabled(True)
         if not isinstance(outcome, ArchiveResult):
-            self.download_progress_label.setText(
-                "Os downloads terminaram, mas não foi possível criar o ZIP."
-            )
+            self.download_progress_label.setVisible(False)
+            self.status_label.setText(f"{total} imagens processadas.")
+            self._render_batch_result()
             self._update_selected_item_action()
             return
+        if self._batch_result is not None:
+            self._batch_result.zip_created = True
+            self._batch_result.zip_count = outcome.file_count
         destination = QFileDialog.getExistingDirectory(
             self,
             "Escolher pasta para salvar o ZIP",
             "",
         )
         if not destination:
-            self.download_progress_label.setText(
-                f"ZIP temporário pronto com {outcome.file_count} imagens. Escolha o destino depois."
-            )
+            self.status_label.setText(f"{total} imagens processadas.")
+            self._render_batch_result()
             self._update_selected_item_action()
             return
         try:
             exported = service.export(outcome.temporary_path, Path(destination))
         except OSError:
-            self.download_progress_label.setText(
-                "Não foi possível salvar o ZIP no destino escolhido."
-            )
+            self.status_label.setText(f"{total} imagens processadas.")
+            self._render_batch_result()
         else:
             service.cleanup_batch(self.controller.batch_id)
-            message = f"Processamento finalizado: {completed} concluídas"
-            if failed:
-                message += f", {failed} com falha"
-            message += f" de {total}. ZIP salvo como {exported.name}."
-            self.status_label.setText(message)
-            self.download_progress_label.setText(message)
+            if self._batch_result is not None:
+                self._batch_result.exported_path = exported
+            self.status_label.setText(f"{total} imagens processadas.")
+            self._render_batch_result()
         self._update_selected_item_action()
 
     def _diagnose_selected_assetway_item(self) -> None:
@@ -921,6 +1145,7 @@ class MainWindow(QMainWindow):
             self._assetway_download_worker = None
             self._batch_finished += 1
             self._batch_failed += 1
+            self._render_batch_progress()
             self._start_next_batch_item()
             return
         self._update_selected_item_action()
@@ -942,7 +1167,7 @@ class MainWindow(QMainWindow):
                 message = "Preparando downloads..."
             else:
                 message = f"Baixando {position} de {self._batch_total}..."
-        self.status_label.setText(message)
+        self.status_label.setText("Processando..." if self._batch_total else message)
         self.download_progress_label.setText(message)
 
     def _on_assetway_download_completed(
@@ -990,21 +1215,13 @@ class MainWindow(QMainWindow):
                 self._batch_completed += 1
                 if outcome.file_path is not None:
                     self._batch_files.append(outcome.file_path)
-                if outcome.provider in {ProviderId.SHUTTERSTOCK, ProviderId.ENVATO}:
-                    self.status_label.setText("Download recebido. Continuando...")
-                    self.download_progress_label.setText("Download recebido. Continuando...")
             else:
                 self._batch_failed += 1
-            remaining = self._batch_total - self._batch_finished
-            if not (
-                isinstance(outcome, DownloadResult)
-                and outcome.status == DownloadStatus.COMPLETED
-                and outcome.provider in {ProviderId.SHUTTERSTOCK, ProviderId.ENVATO}
-            ):
-                self.download_progress_label.setText(
-                    f"{self._batch_total} imagens · {self._batch_completed} concluídas · "
-                    f"{self._batch_failed} falharam · {remaining} restantes"
-                )
+            self._render_batch_progress()
+            self.status_label.setText("Processando...")
+            if isinstance(outcome, DownloadResult) and outcome.status == DownloadStatus.COMPLETED:
+                if outcome.provider in {ProviderId.SHUTTERSTOCK, ProviderId.ENVATO}:
+                    self.download_progress_label.setText("Download recebido. Continuando...")
             self._start_next_batch_item()
             return
         elif isinstance(outcome, AssetwayDownloadError):
@@ -1088,10 +1305,14 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:
         if hasattr(self, "_splitter"):
             orientation = (
-                Qt.Orientation.Vertical if self.width() < 1040 else Qt.Orientation.Horizontal
+                Qt.Orientation.Vertical if self.width() < 940 else Qt.Orientation.Horizontal
             )
             if self._splitter.orientation() != orientation:
                 self._splitter.setOrientation(orientation)
+            compact = orientation == Qt.Orientation.Vertical
+            self.input_panel.setMinimumHeight(410 if compact else 0)
+            self.queue_panel.setMinimumHeight(500 if compact else 0)
+            self._splitter.setMinimumHeight(930 if compact else 0)
         super().resizeEvent(event)
 
     def closeEvent(self, event) -> None:
@@ -1108,137 +1329,4 @@ class MainWindow(QMainWindow):
         self.close()
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow, QWidget#centralWidget { background: #edf2f0; }
-            QWidget {
-                color: #1d3138;
-                font-family: 'Aptos', 'Segoe UI', sans-serif;
-                font-size: 13px;
-            }
-            QLabel#pageTitle { color: #19343a; font-size: 27px; font-weight: 700; }
-            QLabel#pageSubtitle { color: #65777a; font-size: 14px; }
-            QLabel#sectionTitle { color: #19343a; font-size: 17px; font-weight: 650; }
-            QLabel#fieldTitle { color: #435a5e; font-size: 12px; font-weight: 650; }
-            QFrame#panel { background: #ffffff; border: 1px solid #d9e3df; border-radius: 9px; }
-            QFrame#accessPanel {
-                background: #ffffff;
-                border: 1px solid #d9e3df;
-                border-radius: 8px;
-            }
-            QFrame#dropZone { background: #f5f8f6; border: 1px dashed #a9bbb5; border-radius: 8px; }
-            QLabel#dropTitle { color: #234149; font-size: 15px; font-weight: 650; }
-            QLabel#dropHint { color: #718386; }
-            QPushButton {
-                min-height: 38px;
-                padding: 0 14px;
-                border-radius: 6px;
-                font-weight: 600;
-            }
-            QPushButton#selectFilesButton {
-                color: #ffffff;
-                background: #247d76;
-                border: 1px solid #247d76;
-            }
-            QPushButton#selectFilesButton:hover { background: #1d6a65; }
-            QPushButton#clearButton {
-                color: #344b50;
-                background: #ffffff;
-                border: 1px solid #cbd8d4;
-            }
-            QPushButton#clearButton:hover { background: #f4f7f5; }
-            QPushButton#accessOpenButton {
-                color: #ffffff;
-                background: #247d76;
-                border: 1px solid #247d76;
-                min-height: 32px;
-            }
-            QPushButton#accessClearButton {
-                color: #4f6264;
-                background: #ffffff;
-                border: 1px solid #d5dfdb;
-                min-height: 32px;
-            }
-            QPushButton#downloadItemButton {
-                color: #ffffff;
-                background: #176f68;
-                border: 2px solid #176f68;
-                min-height: 50px;
-                font-size: 14px;
-                font-weight: 750;
-            }
-            QPushButton#downloadItemButton:hover {
-                background: #125d57;
-                border-color: #125d57;
-            }
-            QPushButton#downloadItemButton:pressed {
-                background: #0d4a46;
-                border-color: #0d4a46;
-            }
-            QPushButton#downloadItemButton:disabled {
-                color: #899694;
-                background: #dce4e1;
-                border-color: #d1dbd7;
-            }
-            QPushButton#openItemButton, QPushButton#retryDownloadButton,
-            QPushButton#diagnoseItemButton {
-                color: #42595c;
-                background: #ffffff;
-                border: 1px solid #cbd8d4;
-            }
-            QLabel#actionHint { color: #667a7d; }
-            QLabel#downloadProgress {
-                color: #234f52;
-                background: #eef7f4;
-                border: 1px solid #cfe2dc;
-                border-radius: 6px;
-                padding: 10px 12px;
-                font-weight: 600;
-            }
-            QLabel#sessionStatus { color: #617578; }
-            QTextEdit#linksEditor {
-                background: #fbfcfb;
-                border: 1px solid #d6e0dc;
-                border-radius: 6px;
-                padding: 10px;
-                selection-background-color: #81c9bc;
-            }
-            QTextEdit#linksEditor:focus { border: 1px solid #428f86; }
-            QLabel#summaryValue { color: #23766e; font-size: 20px; font-weight: 700; }
-            QLabel#summaryCaption { color: #6a7d80; font-size: 11px; }
-            QLabel#batchSummary {
-                color: #355c60;
-                background: #f3f8f6;
-                border: 1px solid #d8e6e1;
-                border-radius: 6px;
-                padding: 9px 11px;
-            }
-            QTableView#queueTable {
-                background: #ffffff;
-                alternate-background-color: #f6f9f7;
-                border: 1px solid #e0e8e4;
-                border-radius: 6px;
-                selection-background-color: #e4f2ee;
-                selection-color: #18373b;
-            }
-            QHeaderView::section {
-                color: #63777a;
-                background: #f5f8f6;
-                border: none;
-                border-bottom: 1px solid #dfe7e3;
-                padding: 9px 8px;
-                font-size: 11px;
-                font-weight: 650;
-            }
-            QLabel#emptyLabel { color: #7b8b8d; padding: 2px; }
-            QLabel#statusLabel { color: #3d5d60; font-size: 12px; }
-            QLabel#warningLabel {
-                color: #8f4e38;
-                background: #fff3eb;
-                border: 1px solid #f0d2c1;
-                border-radius: 6px;
-                padding: 9px 12px;
-            }
-            QSplitter::handle { background: #dce6e2; }
-            """
-        )
+        self.setStyleSheet(APP_STYLESHEET)
