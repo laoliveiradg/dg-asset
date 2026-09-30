@@ -15,6 +15,7 @@ from PySide6.QtCore import QEventLoop, QMimeData, QPointF, Qt, QTimer, QUrl
 from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import QApplication, QPushButton
 
+from image_downloader.chrome.models import ChromeSessionState, ChromeSessionStatus
 from image_downloader.downloads.models import (
     DownloadFailure,
     DownloadResult,
@@ -849,4 +850,25 @@ def test_assetway_login_action_uses_interactive_access(qt_app) -> None:
 
     assert opened == [ProviderId.ASSETWAY]
     assert "Entre no Assetway" in window.download_progress_label.text()
+    window.close()
+
+
+def test_missing_chrome_has_friendly_message(qt_app) -> None:
+    window = MainWindow()
+
+    window._update_session_status(
+        ChromeSessionStatus(
+            ProviderId.ASSETWAY,
+            ChromeSessionState.ERROR,
+            "chrome_not_found",
+            False,
+            None,
+        )
+    )
+
+    label = window.access_status_labels[ProviderId.ASSETWAY]
+    assert label.text() == (
+        "Google Chrome não encontrado"
+    )
+    assert "Instale o Google Chrome" in label.toolTip()
     window.close()

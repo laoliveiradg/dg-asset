@@ -13,6 +13,7 @@ __pycache__/
 build/
 dist/
 *.spec
+!Asset.spec
 
 # Runtime and local data
 runtime/

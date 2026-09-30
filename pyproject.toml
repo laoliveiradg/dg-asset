@@ -19,6 +19,9 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.6.0",
 ]
+build = [
+    "pyinstaller==6.22.3",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -27,7 +30,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-"image_downloader.ui" = ["assets/*.png"]
+"image_downloader.ui" = ["assets/*.png", "assets/*.ico"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

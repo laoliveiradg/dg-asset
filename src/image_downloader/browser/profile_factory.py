@@ -11,6 +11,7 @@ from image_downloader.browser.session_models import (
     require_supported_provider,
 )
 from image_downloader.providers.models import ProviderId
+from image_downloader.runtime_paths import default_runtime_root
 
 PROFILE_SLUGS = {
     ProviderId.ASSETWAY: "assetway",
@@ -27,7 +28,7 @@ class ProfileFactory:
         self.runtime_root = (
             Path(runtime_root).resolve()
             if runtime_root is not None
-            else Path(__file__).resolve().parents[3] / "runtime"
+            else default_runtime_root()
         )
 
     def paths_for(self, provider: ProviderId | str) -> ProfilePaths:

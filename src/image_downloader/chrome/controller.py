@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 
 from image_downloader.chrome.config import SUPPORTED_PROVIDERS
 from image_downloader.chrome.models import (
+    ChromeNotFoundError,
     ChromeRuntimeError,
     ChromeSessionState,
     ChromeSessionStatus,
@@ -216,11 +217,16 @@ class ChromeSessionController(QObject):
         if isinstance(result, Exception):
             logger.warning("provider=%s chrome_%s_failed", provider.value, operation)
             runtime = self.ensure_runtime()
-            runtime.record_error(provider, operation)
+            reason = (
+                "chrome_not_found"
+                if isinstance(result, ChromeNotFoundError)
+                else "chrome_start_failed" if operation == "open" else "chrome_clear_failed"
+            )
+            runtime.record_error(provider, operation, reason=reason)
             status = ChromeSessionStatus(
                 provider,
                 ChromeSessionState.ERROR,
-                "chrome_start_failed" if operation == "open" else "chrome_clear_failed",
+                reason,
                 runtime.process_manager.is_running(provider),
                 None,
             )

@@ -822,9 +822,13 @@ def test_startup_error_is_safe_and_persists_in_ui(qt_app, tmp_path) -> None:
     window._open_provider(ProviderId.ASSETWAY)
     loop.exec()
     assert outcomes == [False]
-    assert window.access_status_labels[ProviderId.ASSETWAY].text() == "Erro ao iniciar"
+    assert window.access_status_labels[ProviderId.ASSETWAY].text() == (
+        "Google Chrome não encontrado"
+    )
     window.session_controller.refresh_statuses()
-    assert window.access_status_labels[ProviderId.ASSETWAY].text() == "Erro ao iniciar"
+    assert window.access_status_labels[ProviderId.ASSETWAY].text() == (
+        "Google Chrome não encontrado"
+    )
     window.close()
 
 

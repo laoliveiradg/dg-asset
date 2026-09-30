@@ -8,6 +8,7 @@ from pathlib import Path
 from image_downloader.chrome.config import SUPPORTED_PROVIDERS
 from image_downloader.chrome.models import ChromeProfilePaths, UnsupportedChromeProviderError
 from image_downloader.providers.models import ProviderId
+from image_downloader.runtime_paths import default_runtime_root
 
 PROFILE_SLUGS = {
     ProviderId.ASSETWAY: "assetway",
@@ -23,7 +24,7 @@ class ChromeProfileFactory:
         self.runtime_root = (
             Path(runtime_root).resolve()
             if runtime_root is not None
-            else Path(__file__).resolve().parents[3] / "runtime"
+            else default_runtime_root()
         )
 
     def paths_for(self, provider: ProviderId | str) -> ChromeProfilePaths:

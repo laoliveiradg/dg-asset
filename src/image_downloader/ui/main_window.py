@@ -8,7 +8,7 @@ from importlib import resources
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -144,6 +144,7 @@ class MainWindow(QMainWindow):
         logo_pixmap = QPixmap()
         if not logo_pixmap.loadFromData(logo_data, "PNG"):
             raise RuntimeError("The Asset logo could not be loaded.")
+        self.setWindowIcon(QIcon(logo_pixmap))
         self.brand_logo.setPixmap(
             logo_pixmap.scaled(
                 QSize(44, 44),
@@ -777,7 +778,10 @@ class MainWindow(QMainWindow):
         if status.provider == ProviderId.ASSETWAY:
             self._assetway_session_busy = status.state == ChromeSessionState.CHECKING
         if status.state == ChromeSessionState.ERROR:
-            label_text = "Erro ao iniciar" if status.reason == "chrome_start_failed" else "Erro"
+            if status.reason == "chrome_not_found":
+                label_text = "Google Chrome não encontrado"
+            else:
+                label_text = "Erro ao iniciar" if status.reason == "chrome_start_failed" else "Erro"
         elif status.state == ChromeSessionState.CHECKING:
             label_text = (
                 "Iniciando Chrome..."
@@ -800,7 +804,9 @@ class MainWindow(QMainWindow):
         self.access_clear_buttons[status.provider].setEnabled(not is_busy)
         label.setText(label_text)
         label.setToolTip(
-            "A autenticação permanece não verificada até uma validação específica do provider."
+            "Instale o Google Chrome para usar o download automático."
+            if status.reason == "chrome_not_found"
+            else "A autenticação permanece não verificada até uma validação específica do provider."
         )
         self._update_selected_item_action()
 

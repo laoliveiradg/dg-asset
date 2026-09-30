@@ -26,7 +26,7 @@ O parsing e a classificação são locais. Assetway é `AUTOMATED`; Shutterstock
 - src/image_downloader: código principal do pacote.
 - docs: documentação de arquitetura, regras, segurança e performance.
 - tests: testes automatizados das etapas e da integração da UI.
-- runtime: diretório para dados locais e temporários, ignorado pelo Git.
+- `%LOCALAPPDATA%\Asset\runtime`: dados locais e temporários, fora do executável.
 
 ## Como executar
 
@@ -38,4 +38,13 @@ pip install -e .[dev]
 python -m image_downloader
 ```
 
-O texto colado é analisado após um debounce de 300 ms. Profiles Chrome e downloads temporários vivem sob `runtime/` e não são versionados. Estratégias serão validadas provider por provider; o estado de sessão permanece conservador. A antiga implementação QtWebEngine está mantida apenas como legado inativo.
+O texto colado é analisado após um debounce de 300 ms. Profiles Chrome e downloads temporários vivem sob `%LOCALAPPDATA%\Asset\runtime` e não são versionados. Estratégias serão validadas provider por provider; o estado de sessão permanece conservador. A antiga implementação QtWebEngine está mantida apenas como legado inativo.
+
+## Build portátil para Windows
+
+```powershell
+pip install -e ".[build]"
+.\scripts\build_windows.ps1
+```
+
+O artefato é criado em `dist\Asset.exe`, sem instalador e sem console.

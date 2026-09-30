@@ -5,6 +5,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from image_downloader import __version__
+from image_downloader.chrome.profile_factory import ChromeProfileFactory
+from image_downloader.runtime_paths import default_runtime_root
 from image_downloader.ui.main_window import MainWindow
 
 
@@ -20,6 +22,15 @@ def test_basic_modules_import() -> None:
     assert callable(__main__.run)
     assert callable(app_module.run)
     assert callable(configure_logging)
+
+
+def test_default_runtime_uses_local_app_data(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    expected = (tmp_path / "Asset" / "runtime").resolve()
+
+    assert default_runtime_root() == expected
+    assert ChromeProfileFactory().runtime_root == expected
 
 
 def test_main_window_starts() -> None:

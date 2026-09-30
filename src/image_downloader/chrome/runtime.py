@@ -61,7 +61,11 @@ class ChromeRuntime:
                 reason = self._reasons[resolved]
                 state = (
                     ChromeSessionState.ERROR
-                    if reason in {"chrome_start_failed", "chrome_clear_failed"}
+                    if reason in {
+                        "chrome_start_failed",
+                        "chrome_clear_failed",
+                        "chrome_not_found",
+                    }
                     else ChromeSessionState.UNVERIFIED
                 )
             managed = self.process_manager.managed_record(resolved) if running else None
@@ -73,11 +77,19 @@ class ChromeRuntime:
             pid=managed.pid if managed else None,
         )
 
-    def record_error(self, provider: ProviderId | str, operation: str) -> None:
+    def record_error(
+        self,
+        provider: ProviderId | str,
+        operation: str,
+        *,
+        reason: str | None = None,
+    ) -> None:
         resolved = ChromeProcessManager._require_provider(provider)
-        reason = "chrome_start_failed" if operation == "open" else "chrome_clear_failed"
+        resolved_reason = reason or (
+            "chrome_start_failed" if operation == "open" else "chrome_clear_failed"
+        )
         with self._lock:
-            self._reasons[resolved] = reason
+            self._reasons[resolved] = resolved_reason
 
     def open_provider(
         self,
