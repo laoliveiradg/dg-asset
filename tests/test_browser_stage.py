@@ -278,6 +278,10 @@ def test_main_window_access_rows_start_uninitialized(qt_app) -> None:
             )
             assert window.access_open_buttons[provider].text() == "Abrir no navegador"
             assert not window.access_clear_buttons[provider].isEnabled()
+        elif mode == ProviderExecutionMode.AUTOMATED:
+            assert window.access_status_labels[provider].text() == "Automação validada"
+            assert window.access_open_buttons[provider].isEnabled()
+            assert window.access_clear_buttons[provider].isEnabled()
         else:
             assert window.access_status_labels[provider].text() == (
                 "Chrome fechado · Sessão não verificada"

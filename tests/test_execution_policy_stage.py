@@ -32,7 +32,7 @@ def qt_app():
     ("provider", "expected"),
     [
         (ProviderId.SHUTTERSTOCK, ProviderExecutionMode.INTERACTIVE_REQUIRED),
-        (ProviderId.ASSETWAY, ProviderExecutionMode.UNVALIDATED),
+        (ProviderId.ASSETWAY, ProviderExecutionMode.AUTOMATED),
         (ProviderId.ENVATO, ProviderExecutionMode.UNVALIDATED),
         (ProviderId.UNKNOWN, ProviderExecutionMode.UNAVAILABLE),
         ("not-a-provider", ProviderExecutionMode.UNAVAILABLE),
@@ -42,19 +42,15 @@ def test_default_execution_policy_modes(provider, expected) -> None:
     assert DEFAULT_PROVIDER_EXECUTION_POLICY.mode_for(provider) == expected
 
 
-def test_execution_modes_are_centralized_and_not_automated() -> None:
+def test_execution_modes_are_centralized() -> None:
     assert DEFAULT_PROVIDER_EXECUTION_MODES[ProviderId.SHUTTERSTOCK] == (
         ProviderExecutionMode.INTERACTIVE_REQUIRED
     )
     assert DEFAULT_PROVIDER_EXECUTION_MODES[ProviderId.ASSETWAY] == (
-        ProviderExecutionMode.UNVALIDATED
+        ProviderExecutionMode.AUTOMATED
     )
     assert DEFAULT_PROVIDER_EXECUTION_MODES[ProviderId.ENVATO] == (
         ProviderExecutionMode.UNVALIDATED
-    )
-    assert all(
-        mode != ProviderExecutionMode.AUTOMATED
-        for mode in DEFAULT_PROVIDER_EXECUTION_MODES.values()
     )
 
 

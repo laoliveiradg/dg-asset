@@ -51,13 +51,16 @@
 ## Regras de etapa atual
 
 - A Etapa 06B mantém Chrome próprio gerenciado por CDP local disponível para providers cuja política permita esse fluxo.
-- A política da Etapa 06C é centralizada por provider: Shutterstock usa navegação interativa pelo navegador padrão; Assetway e Envato permanecem UNVALIDATED.
+- A política centralizada por provider define Assetway como `AUTOMATED`, Shutterstock como `INTERACTIVE_REQUIRED` e Envato como `UNVALIDATED`.
+- A prioridade atual é entregar o MVP ponta a ponta: orquestração sequencial por provider, downloads validados, ZIP com sucessos e escolha de destino ao final.
+- Assetway usa Chrome gerenciado `BACKGROUND_HEADED` por padrão; Shutterstock permanece assistido no navegador padrão; Envato permanece `UNVALIDATED` até validação real. Não implementar paralelismo, stealth, bypass ou retry automático.
 - Nunca usar profile pessoal no Chrome gerenciado, conectar a Chrome externo via CDP, copiar cookies ou encerrar processos que não sejam próprios.
 - A navegação interativa pelo navegador padrão não autoriza leitura ou alteração do profile normal do usuário.
 - Profiles gerenciados ficam separados por provider em runtime/chrome_profiles e nunca são versionados.
-- O Chrome gerenciado usa porta DevTools efêmera, vinculada a 127.0.0.1, e modo interativo visível.
+- O Chrome gerenciado usa porta DevTools efêmera vinculada a 127.0.0.1; Assetway usa `BACKGROUND_HEADED` minimizado por padrão e `INTERACTIVE` visível somente para login ou intervenção legítima, compartilhando o mesmo profile persistente.
 - A implementação QtWebEngine anterior permanece somente como legado inativo temporário para rollback.
-- Não implementar downloads, scraping, automação de sites, técnicas stealth/anti-bot, seleção de qualidade, ZIP ou persistência da fila.
+- Usar somente controles oficiais e visíveis do Assetway; se não for possível provar a maior qualidade, falhar sem fallback.
+- Não automatizar login, acessar endpoints privados, fazer scraping fora da interação oficial ou usar técnicas stealth/anti-bot. Não insistir em headless quando ele altera o DOM real do provider.
 - A aplicação não deve marcar sessões AUTHENTICATED sem validação específica confiável.
 
 ## Revisão e responsabilidade

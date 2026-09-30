@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -21,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from image_downloader.archive.service import ArchiveResult, BatchArchiveService
 from image_downloader.chrome.config import PROVIDER_NAMES, PROVIDER_START_URLS
 from image_downloader.chrome.controller import ChromeSessionController
 from image_downloader.chrome.models import (
@@ -29,6 +34,10 @@ from image_downloader.chrome.models import (
     ChromeSessionStatus,
 )
 from image_downloader.chrome.runtime import ChromeRuntime
+from image_downloader.downloads.assisted import AssistedDownloadMonitor
+from image_downloader.downloads.models import DownloadResult, DownloadStatus
+from image_downloader.providers.assetway.downloader import AssetwayDownloader
+from image_downloader.providers.assetway.errors import AssetwayDownloadError
 from image_downloader.providers.capabilities import ProviderExecutionMode
 from image_downloader.providers.execution_policy import (
     DEFAULT_PROVIDER_EXECUTION_POLICY,
@@ -39,10 +48,13 @@ from image_downloader.providers.interactive import (
     open_interactive_provider,
 )
 from image_downloader.providers.models import ProviderId
-from image_downloader.queue.models import QueueItem, QueueState
+from image_downloader.queue.models import QueueError, QueueItem, QueueState
 from image_downloader.ui.controllers.input_controller import InputController
 from image_downloader.ui.models.queue_table_model import QueueTableModel
 from image_downloader.ui.widgets.drop_zone import DropZone
+from image_downloader.ui.workers.archive_worker import ArchiveWorker
+from image_downloader.ui.workers.assetway_download_worker import AssetwayDownloadWorker
+from image_downloader.ui.workers.assisted_download_worker import AssistedDownloadWorker
 
 
 class MainWindow(QMainWindow):
@@ -63,6 +75,19 @@ class MainWindow(QMainWindow):
             execution_policy=execution_policy,
         )
         self._shutdown_complete = False
+        self._active_download_item_id: str | None = None
+        self._assetway_download_worker: AssetwayDownloadWorker | None = None
+        self._diagnostic_active = False
+        self._assetway_session_busy = False
+        self._batch_item_ids: list[str] = []
+        self._batch_total = 0
+        self._batch_finished = 0
+        self._batch_completed = 0
+        self._batch_failed = 0
+        self._batch_files: list[Path] = []
+        self._archive_worker: ArchiveWorker | None = None
+        self._assisted_download_worker: AssistedDownloadWorker | None = None
+        self._download_generation = 0
         self.queue_model = QueueTableModel(self)
         self.setWindowTitle("Image Downloader")
         self.setMinimumSize(780, 680)
@@ -71,7 +96,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._apply_style()
         for provider in self._provider_order():
-            if self.execution_policy.mode_for(provider) == ProviderExecutionMode.UNVALIDATED:
+            if self._uses_managed_chrome(provider):
                 self._update_session_status(self.session_controller.status(provider))
 
     def _build_ui(self) -> None:
@@ -97,9 +122,19 @@ class MainWindow(QMainWindow):
         self.clear_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton))
         self.clear_button.setToolTip("Limpar as entradas e iniciar um novo lote")
         self.clear_button.setAccessibleName("Limpar lote")
+        self.settings_button = QPushButton("Acessos")
+        self.settings_button.setObjectName("settingsButton")
+        self.settings_button.setToolTip("Gerenciar login e acessos dos provedores")
+        self.settings_button.clicked.connect(self._show_access_settings)
+        header.addWidget(self.settings_button, 0, Qt.AlignmentFlag.AlignTop)
         header.addWidget(self.clear_button, 0, Qt.AlignmentFlag.AlignTop)
         root_layout.addLayout(header)
-        root_layout.addWidget(self._build_access_panel())
+
+        self.access_dialog = QDialog(self)
+        self.access_dialog.setWindowTitle("Configurações · Acessos")
+        self.access_dialog.setMinimumWidth(680)
+        access_dialog_layout = QVBoxLayout(self.access_dialog)
+        access_dialog_layout.addWidget(self._build_access_panel())
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setObjectName("contentSplitter")
@@ -161,11 +196,14 @@ class MainWindow(QMainWindow):
             clear_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
             clear_button.setToolTip(f"Limpar somente a sessão local de {PROVIDER_NAMES[provider]}")
             clear_button.setAccessibleName(f"Limpar acesso a {PROVIDER_NAMES[provider]}")
-            clear_button.setEnabled(mode == ProviderExecutionMode.UNVALIDATED)
+            clear_button.setEnabled(
+                mode in {ProviderExecutionMode.AUTOMATED, ProviderExecutionMode.UNVALIDATED}
+            )
             open_button.setEnabled(
                 mode
                 in {
                     ProviderExecutionMode.INTERACTIVE_REQUIRED,
+                    ProviderExecutionMode.AUTOMATED,
                     ProviderExecutionMode.UNVALIDATED,
                 }
             )
@@ -199,7 +237,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 18, 20, 20)
         layout.setSpacing(14)
 
-        heading = QLabel("Entradas")
+        heading = QLabel("Adicionar arquivos e links")
         heading.setObjectName("sectionTitle")
         layout.addWidget(heading)
 
@@ -226,7 +264,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 18, 20, 20)
         layout.setSpacing(14)
 
-        heading = QLabel("Fila preparada")
+        heading = QLabel("Imagens encontradas")
         heading.setObjectName("sectionTitle")
         layout.addWidget(heading)
 
@@ -257,6 +295,11 @@ class MainWindow(QMainWindow):
             self.summary_values[key] = value
         layout.addLayout(summary_layout)
 
+        self.batch_summary_label = QLabel("Nenhuma imagem pronta para processamento.")
+        self.batch_summary_label.setObjectName("batchSummary")
+        self.batch_summary_label.setWordWrap(True)
+        layout.addWidget(self.batch_summary_label)
+
         self.queue_table = QTableView(panel)
         self.queue_table.setObjectName("queueTable")
         self.queue_table.setModel(self.queue_model)
@@ -272,13 +315,71 @@ class MainWindow(QMainWindow):
         self.queue_table.setColumnWidth(1, 126)
         self.queue_table.setColumnWidth(2, 116)
         self.queue_table.setAccessibleName("Itens da fila")
+        self.queue_table.setVisible(False)
+        self.details_button = QPushButton("Ver detalhes", panel)
+        self.details_button.setObjectName("detailsButton")
+        self.details_button.setCheckable(True)
+        self.details_button.toggled.connect(self._toggle_details)
+        layout.addWidget(self.details_button, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.queue_table, 1)
+
+        action_heading = QLabel("Downloads")
+        action_heading.setObjectName("fieldTitle")
+        layout.addWidget(action_heading)
+        self.download_selection_hint = QLabel(
+            "Adicione imagens para identificar automaticamente o que pode ser processado."
+        )
+        self.download_selection_hint.setObjectName("actionHint")
+        self.download_selection_hint.setWordWrap(True)
+        layout.addWidget(self.download_selection_hint)
 
         self.open_item_button = QPushButton("Abrir no navegador", panel)
         self.open_item_button.setObjectName("openItemButton")
         self.open_item_button.setEnabled(False)
+        self.open_item_button.setVisible(False)
         self.open_item_button.clicked.connect(self._open_selected_queue_item)
-        layout.addWidget(self.open_item_button, 0, Qt.AlignmentFlag.AlignRight)
+        self.download_item_button = QPushButton("BAIXAR IMAGENS", panel)
+        self.download_item_button.setObjectName("downloadItemButton")
+        self.download_item_button.setToolTip(
+            "Processar automaticamente as imagens compatíveis desta etapa"
+        )
+        self.download_item_button.setEnabled(False)
+        self.download_item_button.clicked.connect(self._download_selected_assetway_item)
+        self.diagnose_item_button = QPushButton("Diagnosticar controles", panel)
+        self.diagnose_item_button.setObjectName("diagnoseItemButton")
+        self.diagnose_item_button.setToolTip(
+            "Listar metadados sanitizados dos controles sem iniciar download"
+        )
+        self.diagnose_item_button.setEnabled(False)
+        self.diagnose_item_button.setVisible(
+            os.environ.get("IMAGE_DOWNLOADER_DEV_TOOLS") == "1"
+        )
+        self.diagnose_item_button.clicked.connect(self._diagnose_selected_assetway_item)
+        self.retry_download_button = QPushButton("Tentar novamente", panel)
+        self.retry_download_button.setObjectName("retryDownloadButton")
+        self.retry_download_button.setEnabled(False)
+        self.retry_download_button.setVisible(False)
+        self.retry_download_button.clicked.connect(self._retry_selected_assetway_item)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        actions.addWidget(self.open_item_button)
+        actions.addWidget(self.diagnose_item_button)
+        actions.addWidget(self.retry_download_button)
+        layout.addLayout(actions)
+        layout.addWidget(self.download_item_button)
+
+        progress_heading = QLabel("Progresso")
+        progress_heading.setObjectName("fieldTitle")
+        layout.addWidget(progress_heading)
+        self.download_progress_label = QLabel("Aguardando um item Assetway selecionado.")
+        self.download_progress_label.setObjectName("downloadProgress")
+        self.download_progress_label.setWordWrap(True)
+        layout.addWidget(self.download_progress_label)
+        self.assetway_login_button = QPushButton("ENTRAR NO ASSETWAY", panel)
+        self.assetway_login_button.setObjectName("assetwayLoginButton")
+        self.assetway_login_button.setVisible(False)
+        self.assetway_login_button.clicked.connect(self._open_assetway_login)
+        layout.addWidget(self.assetway_login_button)
 
         self.empty_label = QLabel("Nenhuma URL na fila.")
         self.empty_label.setObjectName("emptyLabel")
@@ -314,14 +415,45 @@ class MainWindow(QMainWindow):
         if paths:
             self.controller.add_files(paths)
 
+    def _show_access_settings(self) -> None:
+        self.access_dialog.show()
+        self.access_dialog.raise_()
+        self.access_dialog.activateWindow()
+
+    def _toggle_details(self, visible: bool) -> None:
+        self.queue_table.setVisible(visible)
+        self.details_button.setText("Ocultar detalhes" if visible else "Ver detalhes")
+
     def _clear_batch(self) -> None:
         self.links_edit.blockSignals(True)
         self.links_edit.clear()
         self.links_edit.blockSignals(False)
+        self._batch_item_ids.clear()
+        self._batch_total = 0
+        self._batch_finished = 0
+        self._batch_completed = 0
+        self._batch_failed = 0
+        self._batch_files.clear()
+        self._download_generation += 1
+        self.assetway_login_button.setVisible(False)
+        self.download_progress_label.setText("Aguardando imagens para processar.")
         self.controller.clear_batch()
 
     def _apply_snapshot(self, snapshot) -> None:
+        selected_item = self._selected_queue_item()
+        selected_item_id = selected_item.item_id if selected_item is not None else None
         self.queue_model.set_items(snapshot.items)
+        if selected_item_id is not None:
+            selected_row = next(
+                (
+                    row
+                    for row, item in enumerate(self.queue_model.items)
+                    if item.item_id == selected_item_id
+                ),
+                None,
+            )
+            if selected_row is not None:
+                self.queue_table.selectRow(selected_row)
         self._update_selected_item_action()
         summary = snapshot.summary
         self.summary_values["total"].setText(str(summary.total))
@@ -333,6 +465,20 @@ class MainWindow(QMainWindow):
         )
         self.summary_values["envato"].setText(str(summary.provider_counts[ProviderId.ENVATO]))
         self.summary_values["blocked"].setText(str(summary.blocked))
+        automatic = sum(
+            item.provider == ProviderId.ASSETWAY and item.state == QueueState.READY
+            for item in snapshot.items
+        )
+        interactive = sum(
+            item.provider == ProviderId.SHUTTERSTOCK for item in snapshot.items
+        )
+        unvalidated = sum(item.provider == ProviderId.ENVATO for item in snapshot.items)
+        unavailable = sum(item.provider == ProviderId.UNKNOWN for item in snapshot.items)
+        self.batch_summary_label.setText(
+            f"{summary.total} imagens encontradas · {automatic} prontas para download "
+            f"automático · {interactive} exigem interação · {unvalidated} ainda não "
+            f"validadas · {unavailable} indisponíveis"
+        )
         self.empty_label.setVisible(summary.total == 0)
 
     def _show_warnings(self, message: str) -> None:
@@ -365,7 +511,7 @@ class MainWindow(QMainWindow):
                     f"Não foi possível abrir o acesso a {PROVIDER_NAMES[provider]}."
                 )
             return
-        if mode != ProviderExecutionMode.UNVALIDATED:
+        if not self._uses_managed_chrome(provider):
             self.status_label.setText(f"Acesso indisponível para {PROVIDER_NAMES[provider]}.")
             return
         try:
@@ -376,7 +522,7 @@ class MainWindow(QMainWindow):
             )
 
     def _confirm_clear_provider(self, provider: ProviderId) -> None:
-        if self.execution_policy.mode_for(provider) != ProviderExecutionMode.UNVALIDATED:
+        if not self._uses_managed_chrome(provider):
             return
         answer = QMessageBox.question(
             self,
@@ -410,8 +556,10 @@ class MainWindow(QMainWindow):
             )
 
     def _update_session_status(self, status: ChromeSessionStatus) -> None:
-        if self.execution_policy.mode_for(status.provider) != ProviderExecutionMode.UNVALIDATED:
+        if not self._uses_managed_chrome(status.provider):
             return
+        if status.provider == ProviderId.ASSETWAY:
+            self._assetway_session_busy = status.state == ChromeSessionState.CHECKING
         if status.state == ChromeSessionState.ERROR:
             label_text = "Erro ao iniciar" if status.reason == "chrome_start_failed" else "Erro"
         elif status.state == ChromeSessionState.CHECKING:
@@ -421,9 +569,13 @@ class MainWindow(QMainWindow):
                 else "Limpando profile..."
             )
         elif status.chrome_running:
-            label_text = "Chrome aberto · Sessão não verificada"
+            label_text = "Automação pronta" if self.execution_policy.mode_for(
+                status.provider
+            ) == ProviderExecutionMode.AUTOMATED else "Chrome aberto · Sessão não verificada"
         else:
-            label_text = "Chrome fechado · Sessão não verificada"
+            label_text = "Automação validada" if self.execution_policy.mode_for(
+                status.provider
+            ) == ProviderExecutionMode.AUTOMATED else "Chrome fechado · Sessão não verificada"
         label = self.access_status_labels.get(status.provider)
         if label is None:
             return
@@ -434,15 +586,436 @@ class MainWindow(QMainWindow):
         label.setToolTip(
             "A autenticação permanece não verificada até uma validação específica do provider."
         )
+        self._update_selected_item_action()
 
     def _update_selected_item_action(self) -> None:
         item = self._selected_queue_item()
+        eligible = self._processable_ready_items()
+        busy = (
+            self._active_download_item_id is not None
+            or bool(self._batch_item_ids)
+            or self._assetway_session_busy
+        )
         self.open_item_button.setEnabled(
             item is not None
             and item.state == QueueState.READY
             and self.execution_policy.mode_for(item.provider)
             == ProviderExecutionMode.INTERACTIVE_REQUIRED
         )
+        self.download_item_button.setEnabled(
+            not busy and bool(eligible)
+        )
+        self.diagnose_item_button.setEnabled(
+            not busy
+            and item is not None
+            and item.state == QueueState.READY
+            and item.provider == ProviderId.ASSETWAY
+        )
+        self.retry_download_button.setEnabled(
+            not busy
+            and item is not None
+            and item.provider == ProviderId.ASSETWAY
+            and item.state == QueueState.FAILED
+            and item.error is not None
+            and item.error.retryable
+        )
+        if self.download_item_button.isEnabled():
+            self.download_item_button.setText(f"BAIXAR {len(eligible)} IMAGENS")
+            self.download_item_button.setToolTip(
+                "Processar automaticamente todas as imagens compatíveis desta etapa"
+            )
+            self.download_selection_hint.setText(
+                f"{len(eligible)} itens prontos para download automático."
+            )
+        elif busy:
+            self.download_item_button.setText("PROCESSANDO...")
+            self.download_item_button.setToolTip("O processamento automático está em andamento")
+            self.download_selection_hint.setText(
+                "Processamento automático em andamento. Nenhuma seleção é necessária."
+            )
+        else:
+            self.download_item_button.setText("BAIXAR IMAGENS")
+            self.download_item_button.setToolTip(
+                "Não há imagens compatíveis prontas para download automático"
+            )
+            self.download_selection_hint.setText(
+                "Nenhuma imagem está pronta para download automático nesta etapa."
+            )
+
+    def _download_selected_assetway_item(self) -> None:
+        if self._active_download_item_id is not None or self._batch_item_ids:
+            return
+        eligible = self._processable_ready_items()
+        if not eligible:
+            return
+        self._batch_item_ids = [item.item_id for item in eligible]
+        self._download_generation += 1
+        self._batch_total = len(self._batch_item_ids)
+        self._batch_finished = 0
+        self._batch_completed = 0
+        self._batch_failed = 0
+        self._batch_files.clear()
+        self.assetway_login_button.setVisible(False)
+        self.clear_button.setEnabled(False)
+        self._start_next_batch_item()
+
+    def _open_assetway_login(self) -> None:
+        self.assetway_login_button.setVisible(False)
+        self._open_provider(ProviderId.ASSETWAY)
+        self.download_progress_label.setText(
+            "Entre no Assetway na janela aberta. Depois, clique em Baixar imagens novamente."
+        )
+
+    def _retry_selected_assetway_item(self) -> None:
+        item = self._selected_queue_item()
+        if (
+            item is None
+            or item.provider != ProviderId.ASSETWAY
+            or item.state != QueueState.FAILED
+            or item.error is None
+            or not item.error.retryable
+        ):
+            return
+        ready_item = self.controller.queue_manager.prepare_retry(item.item_id)
+        self.controller.publish_queue_snapshot()
+        self._submit_assetway_download(ready_item)
+
+    def _processable_ready_items(self) -> list[QueueItem]:
+        return [
+            item
+            for item in self.controller.queue_manager.list_items()
+            if item.provider in {ProviderId.ASSETWAY, ProviderId.SHUTTERSTOCK}
+            and item.state == QueueState.READY
+        ]
+
+    def _start_next_batch_item(self) -> None:
+        while self._batch_item_ids:
+            item_id = self._batch_item_ids.pop(0)
+            item = self.controller.queue_manager.get_item(item_id)
+            if item.state == QueueState.READY:
+                if item.provider == ProviderId.ASSETWAY:
+                    self._submit_assetway_download(item)
+                    return
+                if item.provider == ProviderId.SHUTTERSTOCK:
+                    self._submit_shutterstock_download(item)
+                    return
+            self._batch_finished += 1
+        self._finish_download_batch()
+
+    def _submit_shutterstock_download(self, item: QueueItem) -> None:
+        runtime = self.session_controller.ensure_runtime()
+        monitor = AssistedDownloadMonitor(
+            Path.home() / "Downloads",
+            runtime.process_manager.profile_factory.runtime_root,
+        )
+        before = monitor.snapshot()
+        try:
+            opened = open_interactive_provider(
+                ProviderId.SHUTTERSTOCK,
+                item.normalized_url,
+                execution_policy=self.execution_policy,
+            )
+        except InteractiveProviderError:
+            opened = False
+        if not opened:
+            self.controller.queue_manager.start_processing(item.item_id)
+            self.controller.queue_manager.mark_failed(
+                item.item_id,
+                QueueError(
+                    "interactive_open_failed",
+                    "Não foi possível abrir o item Shutterstock.",
+                    ProviderId.SHUTTERSTOCK,
+                    True,
+                ),
+            )
+            self._batch_finished += 1
+            self._batch_failed += 1
+            self._start_next_batch_item()
+            return
+        self._active_download_item_id = item.item_id
+        self.download_progress_label.setText("Aguardando confirmação no Shutterstock...")
+        worker = AssistedDownloadWorker(
+            monitor,
+            self.controller.queue_manager,
+            item.item_id,
+            before,
+        )
+        generation = self._download_generation
+        worker.signals.completed.connect(
+            lambda outcome, current=generation: self._on_assetway_download_completed(
+                outcome, current
+            )
+        )
+        self._assisted_download_worker = worker
+        if not self.session_controller.submit_worker(worker):
+            self._assisted_download_worker = None
+            self._active_download_item_id = None
+            self._batch_finished += 1
+            self._batch_failed += 1
+            self._start_next_batch_item()
+
+    def _finish_download_batch(self) -> None:
+        total = self._batch_total
+        completed = self._batch_completed
+        failed = self._batch_failed
+        files = list(self._batch_files)
+        self._batch_item_ids.clear()
+        self._batch_total = 0
+        self._batch_finished = 0
+        self._batch_completed = 0
+        self._batch_failed = 0
+        self._batch_files.clear()
+        if files:
+            self._create_batch_archive(files, completed, failed, total)
+            return
+        self.clear_button.setEnabled(True)
+        message = f"Processamento finalizado: {completed} concluídas"
+        if failed:
+            message += f", {failed} com falha"
+        message += f" de {total}."
+        self.status_label.setText(message)
+        self.download_progress_label.setText(message)
+        self._update_selected_item_action()
+
+    def _create_batch_archive(
+        self,
+        files: list[Path],
+        completed: int,
+        failed: int,
+        total: int,
+    ) -> None:
+        self.download_progress_label.setText("Criando ZIP...")
+        runtime = self.session_controller.ensure_runtime()
+        service = BatchArchiveService(runtime.process_manager.profile_factory.runtime_root)
+        worker = ArchiveWorker(service, self.controller.batch_id, files)
+        worker.signals.completed.connect(
+            lambda outcome: self._on_archive_completed(
+                service,
+                outcome,
+                completed,
+                failed,
+                total,
+            )
+        )
+        self._archive_worker = worker
+        if not self.session_controller.submit_worker(worker):
+            self._archive_worker = None
+            self.clear_button.setEnabled(True)
+            self.download_progress_label.setText("Não foi possível iniciar a criação do ZIP.")
+
+    def _on_archive_completed(
+        self,
+        service: BatchArchiveService,
+        outcome: object,
+        completed: int,
+        failed: int,
+        total: int,
+    ) -> None:
+        self._archive_worker = None
+        self.clear_button.setEnabled(True)
+        if not isinstance(outcome, ArchiveResult):
+            self.download_progress_label.setText(
+                "Os downloads terminaram, mas não foi possível criar o ZIP."
+            )
+            self._update_selected_item_action()
+            return
+        destination = QFileDialog.getExistingDirectory(
+            self,
+            "Escolher pasta para salvar o ZIP",
+            "",
+        )
+        if not destination:
+            self.download_progress_label.setText(
+                f"ZIP temporário pronto com {outcome.file_count} imagens. Escolha o destino depois."
+            )
+            self._update_selected_item_action()
+            return
+        try:
+            exported = service.export(outcome.temporary_path, Path(destination))
+        except OSError:
+            self.download_progress_label.setText(
+                "Não foi possível salvar o ZIP no destino escolhido."
+            )
+        else:
+            service.cleanup_batch(self.controller.batch_id)
+            message = f"Processamento finalizado: {completed} concluídas"
+            if failed:
+                message += f", {failed} com falha"
+            message += f" de {total}. ZIP salvo como {exported.name}."
+            self.status_label.setText(message)
+            self.download_progress_label.setText(message)
+        self._update_selected_item_action()
+
+    def _diagnose_selected_assetway_item(self) -> None:
+        item = self._selected_queue_item()
+        if item is None or item.provider != ProviderId.ASSETWAY or item.state != QueueState.READY:
+            return
+        if self._active_download_item_id is not None or self._assetway_session_busy:
+            return
+        self._active_download_item_id = item.item_id
+        self._diagnostic_active = True
+        self.clear_button.setEnabled(False)
+        runtime = self.session_controller.ensure_runtime()
+        worker = AssetwayDownloadWorker(
+            AssetwayDownloader(runtime),
+            self.controller.queue_manager,
+            item.item_id,
+            diagnostic_only=True,
+        )
+        generation = self._download_generation
+        worker.signals.progress.connect(
+            lambda message, current=generation: self._on_assetway_download_progress(
+                message, current
+            )
+        )
+        worker.signals.completed.connect(
+            lambda outcome, current=generation: self._on_assetway_download_completed(
+                outcome, current
+            )
+        )
+        self._assetway_download_worker = worker
+        if not self.session_controller.submit_worker(worker):
+            self._active_download_item_id = None
+            self._assetway_download_worker = None
+            self._diagnostic_active = False
+            self.clear_button.setEnabled(True)
+        self._update_selected_item_action()
+
+    def _submit_assetway_download(self, item: QueueItem) -> None:
+        if self._active_download_item_id is not None or self._assetway_session_busy:
+            return
+        self._active_download_item_id = item.item_id
+        self._diagnostic_active = False
+        self.clear_button.setEnabled(False)
+        self.access_open_buttons[ProviderId.ASSETWAY].setEnabled(False)
+        self.access_clear_buttons[ProviderId.ASSETWAY].setEnabled(False)
+        runtime = self.session_controller.ensure_runtime()
+        worker = AssetwayDownloadWorker(
+            AssetwayDownloader(runtime),
+            self.controller.queue_manager,
+            item.item_id,
+        )
+        generation = self._download_generation
+        worker.signals.progress.connect(
+            lambda message, current=generation: self._on_assetway_download_progress(
+                message, current
+            )
+        )
+        worker.signals.completed.connect(
+            lambda outcome, current=generation: self._on_assetway_download_completed(
+                outcome, current
+            )
+        )
+        self._assetway_download_worker = worker
+        if not self.session_controller.submit_worker(worker):
+            self._active_download_item_id = None
+            self._assetway_download_worker = None
+            self._batch_finished += 1
+            self._batch_failed += 1
+            self._start_next_batch_item()
+            return
+        self._update_selected_item_action()
+
+    def _on_assetway_download_progress(
+        self,
+        message: str,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and generation != self._download_generation:
+            return
+        if message == "Preparando ativo...":
+            self.controller.publish_queue_snapshot()
+        if self._batch_total:
+            position = self._batch_finished + 1
+            if message == "Validando...":
+                message = f"Validando {position} de {self._batch_total}..."
+            elif message in {"Preparando ativo...", "Abrindo ativo..."}:
+                message = "Preparando downloads..."
+            else:
+                message = f"Baixando {position} de {self._batch_total}..."
+        self.status_label.setText(message)
+        self.download_progress_label.setText(message)
+
+    def _on_assetway_download_completed(
+        self,
+        outcome: object,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and generation != self._download_generation:
+            return
+        diagnostic_active = self._diagnostic_active
+        self._diagnostic_active = False
+        self._active_download_item_id = None
+        self._assetway_download_worker = None
+        self._assisted_download_worker = None
+        if not self._batch_total:
+            self.clear_button.setEnabled(True)
+        status = self.session_controller.status(ProviderId.ASSETWAY)
+        self._update_session_status(status)
+        self.controller.publish_queue_snapshot()
+        if diagnostic_active and isinstance(outcome, int):
+            message = (
+                f"Diagnóstico concluído: {outcome} candidatos sanitizados registrados; "
+                "nenhum controle foi acionado."
+            )
+            self.status_label.setText(message)
+            self.download_progress_label.setText(message)
+        elif self._batch_total and self._outcome_error_code(outcome) == "authentication_required":
+            self._batch_finished += 1
+            self._batch_failed += 1
+            self._batch_item_ids.clear()
+            self._batch_total = 0
+            self._batch_finished = 0
+            self._batch_completed = 0
+            self._batch_failed = 0
+            self.clear_button.setEnabled(True)
+            self.assetway_login_button.setVisible(True)
+            message = "É necessário entrar novamente no Assetway."
+            self.status_label.setText(message)
+            self.download_progress_label.setText(message)
+            self._update_selected_item_action()
+            return
+        elif self._batch_total:
+            self._batch_finished += 1
+            if isinstance(outcome, DownloadResult) and outcome.status == DownloadStatus.COMPLETED:
+                self._batch_completed += 1
+                if outcome.file_path is not None:
+                    self._batch_files.append(outcome.file_path)
+            else:
+                self._batch_failed += 1
+            remaining = self._batch_total - self._batch_finished
+            self.download_progress_label.setText(
+                f"{self._batch_total} imagens · {self._batch_completed} concluídas · "
+                f"{self._batch_failed} falharam · {remaining} restantes"
+            )
+            self._start_next_batch_item()
+            return
+        elif isinstance(outcome, AssetwayDownloadError):
+            self.status_label.setText(outcome.safe_message)
+            self.download_progress_label.setText(outcome.safe_message)
+        elif isinstance(outcome, DownloadResult) and outcome.status == DownloadStatus.COMPLETED:
+            message = (
+                f"Concluído: {outcome.file_name} · {outcome.source_format} · "
+                f"{outcome.bytes_received} bytes · {outcome.quality_label} · "
+                f"{outcome.timings.total_ms:.0f} ms"
+            )
+            self.status_label.setText(message)
+            self.download_progress_label.setText(message)
+        elif isinstance(outcome, DownloadResult) and outcome.error is not None:
+            self.status_label.setText(outcome.error.safe_message)
+            self.download_progress_label.setText(outcome.error.safe_message)
+        else:
+            self.status_label.setText("O download Assetway falhou com segurança.")
+            self.download_progress_label.setText("O download Assetway falhou com segurança.")
+        self._update_selected_item_action()
+
+    @staticmethod
+    def _outcome_error_code(outcome: object) -> str | None:
+        if isinstance(outcome, AssetwayDownloadError):
+            return outcome.code
+        if isinstance(outcome, DownloadResult) and outcome.error is not None:
+            return outcome.error.code
+        return None
 
     def _open_selected_queue_item(self) -> None:
         item = self._selected_queue_item()
@@ -484,6 +1057,12 @@ class MainWindow(QMainWindow):
         if mode == ProviderExecutionMode.UNAVAILABLE:
             return "Indisponível"
         return "Chrome fechado · Sessão não verificada"
+
+    def _uses_managed_chrome(self, provider: ProviderId) -> bool:
+        return self.execution_policy.mode_for(provider) in {
+            ProviderExecutionMode.AUTOMATED,
+            ProviderExecutionMode.UNVALIDATED,
+        }
 
     @staticmethod
     def _provider_order() -> tuple[ProviderId, ...]:
@@ -563,6 +1142,42 @@ class MainWindow(QMainWindow):
                 border: 1px solid #d5dfdb;
                 min-height: 32px;
             }
+            QPushButton#downloadItemButton {
+                color: #ffffff;
+                background: #176f68;
+                border: 2px solid #176f68;
+                min-height: 50px;
+                font-size: 14px;
+                font-weight: 750;
+            }
+            QPushButton#downloadItemButton:hover {
+                background: #125d57;
+                border-color: #125d57;
+            }
+            QPushButton#downloadItemButton:pressed {
+                background: #0d4a46;
+                border-color: #0d4a46;
+            }
+            QPushButton#downloadItemButton:disabled {
+                color: #899694;
+                background: #dce4e1;
+                border-color: #d1dbd7;
+            }
+            QPushButton#openItemButton, QPushButton#retryDownloadButton,
+            QPushButton#diagnoseItemButton {
+                color: #42595c;
+                background: #ffffff;
+                border: 1px solid #cbd8d4;
+            }
+            QLabel#actionHint { color: #667a7d; }
+            QLabel#downloadProgress {
+                color: #234f52;
+                background: #eef7f4;
+                border: 1px solid #cfe2dc;
+                border-radius: 6px;
+                padding: 10px 12px;
+                font-weight: 600;
+            }
             QLabel#sessionStatus { color: #617578; }
             QTextEdit#linksEditor {
                 background: #fbfcfb;
@@ -574,6 +1189,13 @@ class MainWindow(QMainWindow):
             QTextEdit#linksEditor:focus { border: 1px solid #428f86; }
             QLabel#summaryValue { color: #23766e; font-size: 20px; font-weight: 700; }
             QLabel#summaryCaption { color: #6a7d80; font-size: 11px; }
+            QLabel#batchSummary {
+                color: #355c60;
+                background: #f3f8f6;
+                border: 1px solid #d8e6e1;
+                border-radius: 6px;
+                padding: 9px 11px;
+            }
             QTableView#queueTable {
                 background: #ffffff;
                 alternate-background-color: #f6f9f7;

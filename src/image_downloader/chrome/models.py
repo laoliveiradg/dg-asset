@@ -12,6 +12,7 @@ from image_downloader.providers.models import ProviderId
 class ChromeMode(StrEnum):
     INTERACTIVE = "INTERACTIVE"
     BACKGROUND = "BACKGROUND"
+    BACKGROUND_HEADED = "BACKGROUND_HEADED"
 
 
 class ChromeSessionState(StrEnum):
@@ -57,6 +58,7 @@ class ChromeTimings:
 @dataclass(frozen=True, slots=True)
 class ManagedChrome:
     provider: ProviderId
+    mode: ChromeMode
     pid: int
     port: int
     profile_paths: ChromeProfilePaths

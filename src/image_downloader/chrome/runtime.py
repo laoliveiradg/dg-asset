@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from threading import RLock
 
+from image_downloader.chrome.cdp_client import CdpClient
 from image_downloader.chrome.config import SUPPORTED_PROVIDERS
 from image_downloader.chrome.models import (
     ChromeMode,
@@ -21,6 +22,7 @@ from image_downloader.providers.models import ProviderId
 @dataclass(frozen=True, slots=True)
 class ChromeOpenResult:
     provider: ProviderId
+    mode: ChromeMode
     pid: int
     port: int
     target_id: str
@@ -29,7 +31,7 @@ class ChromeOpenResult:
 
 
 class ChromeRuntime:
-    """Share one visible, managed Chrome process and one stable profile per provider."""
+    """Share one managed Chrome process and one stable profile per provider."""
 
     def __init__(
         self,
@@ -88,6 +90,7 @@ class ChromeRuntime:
             self._reasons[managed.provider] = "chrome_open_session_unverified"
         return ChromeOpenResult(
             provider=managed.provider,
+            mode=managed.mode,
             pid=managed.pid,
             port=managed.port,
             target_id=managed.target_id,
@@ -95,12 +98,21 @@ class ChromeRuntime:
             timings=managed.timings,
         )
 
+    def cdp_client_for(self, provider: ProviderId | str) -> CdpClient:
+        """Return the local CDP client only for a live app-owned Chrome process."""
+
+        return self.process_manager.cdp_client_for(provider)
+
     def close_provider(self, provider: ProviderId | str) -> float:
         resolved = ChromeProcessManager._require_provider(provider)
         close_ms = self.process_manager.close_provider(resolved)
         with self._lock:
             self._reasons[resolved] = "chrome_closed_session_unverified"
         return close_ms
+
+    def recover_provider(self, provider: ProviderId | str) -> None:
+        resolved = ChromeProcessManager._require_provider(provider)
+        self.process_manager.recover_provider(resolved)
 
     def clear_provider(self, provider: ProviderId | str) -> ChromeProfilePaths:
         resolved = ChromeProcessManager._require_provider(provider)

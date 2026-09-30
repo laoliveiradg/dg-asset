@@ -53,7 +53,7 @@ A arquitetura do projeto foi desenhada para separar responsabilidades claras e p
 
 `ProviderExecutionMode` descreve a estratégia/capacidade do provider sem alterar o `QueueState`. `ProviderRegistry` continua responsável somente por classificação; a política centralizada mapeia `ProviderId` para `AUTOMATED`, `INTERACTIVE_REQUIRED`, `UNVALIDATED` ou `UNAVAILABLE`.
 
-Política inicial: Shutterstock é `INTERACTIVE_REQUIRED`; Assetway e Envato são `UNVALIDATED`; `UNKNOWN` é `UNAVAILABLE`. Um provider interativo continua suportado e seus itens permanecem `READY`. A UI consulta a política para escolher a ação, e o futuro scheduler deverá fazer o mesmo.
+Política atual: Assetway é `AUTOMATED`, Shutterstock é `INTERACTIVE_REQUIRED`, Envato é `UNVALIDATED` e `UNKNOWN` é `UNAVAILABLE`. Um provider interativo continua suportado e seus itens permanecem `READY`. A UI consulta a política para escolher a ação, e o futuro scheduler deverá fazer o mesmo.
 
 Para navegação interativa, `open_interactive_provider(provider, url)` envia a URL original/normalizada ao navegador padrão do Windows via biblioteca padrão. O sistema não conecta via CDP, não inicia Chrome gerenciado para essa ação e não acessa o profile normal. Query e fragmento são preservados. O ChromeRuntime da Etapa 06B permanece disponível para providers que venham a ser validados para esse mecanismo.
 
@@ -64,6 +64,7 @@ Não são adotadas técnicas para mascarar automação ou contornar proteções 
 - Recebe instruções da fila.
 - Gerencia validação da qualidade, seleção da melhor URL e armazenamento temporário.
 - Deve ser orientado para segurança e rastreabilidade.
+- A Etapa 07A mantém o downloader isolado por item Assetway e adiciona orquestração sequencial na UI para todos os itens elegíveis; ChromeRuntime genérico não contém lógica específica desse provider.
 
 ### Compactação
 
@@ -150,11 +151,11 @@ Senhas não são recebidas nem armazenadas pelo aplicativo; login e 2FA ocorrem 
 
 ## Chrome gerenciado (Etapa 06B)
 
-`ChromeSessionController` agenda abertura e limpeza em workers Qt; `ChromeRuntime` mantém status conservador e delega o processo a `ChromeProcessManager`. O executável é localizado sem instalação automática. Cada provider tem um diretório próprio dentro de `runtime/chrome_profiles/`; antes de iniciar, o runtime recusa profiles que já contenham `DevToolsActivePort`, pois ownership não pode ser provado. A URL do provider só é enviada após o processo iniciado pelo app estar vivo e a porta local CDP ser validada.
+`ChromeSessionController` agenda abertura e limpeza em workers Qt; `ChromeRuntime` mantém status conservador e delega o processo a `ChromeProcessManager`. O executável é localizado sem instalação automática. Cada provider tem um diretório próprio dentro de `runtime/chrome_profiles/`. O runtime persiste em `managed_process.json` somente PID, executável, provider, profile, modo e identidade temporal do processo. Após reinício, um órfão só é recuperado quando PID, criação, executável e argumento exato `--user-data-dir` comprovam o uso do profile dedicado. PID reutilizado e Chrome com qualquer outro profile não são encerrados.
 
-Argumentos usados: `--user-data-dir`, `--remote-debugging-port=0`, `--remote-debugging-address=127.0.0.1`, `--no-first-run` e `--no-default-browser-check`. Não são usados argumentos stealth, certificados ignorados, user-agent falso ou modo headless. CDP valida host, porta e caminho WebSocket antes de enviar comandos; HTTP usa proxy desligado para loopback.
+Argumentos comuns: `--user-data-dir`, `--remote-debugging-port=0`, `--remote-debugging-address=127.0.0.1`, `--no-first-run` e `--no-default-browser-check`. Assetway usa `ChromeMode.BACKGROUND_HEADED` com `--start-minimized`, pois o DOM real divergiu no headless; `INTERACTIVE` permanece visível para login. Os modos reutilizam o mesmo profile e nunca executam simultaneamente. Não são usados stealth, certificado ignorado ou user-agent falso.
 
-O fechamento tenta `Browser.close`, aguarda o handle `Popen` e somente em timeout chama `terminate`/`kill` nesse handle específico. Não usa seleção por nome de processo nem `taskkill`; o Chrome gerencia seus subprocessos ao fechar normalmente. A limpeza fecha primeiro o processo próprio e apaga somente a pasta do provider selecionado.
+O fechamento normal tenta `Browser.close`, aguarda o handle `Popen` e somente em timeout chama `terminate`/`kill` nesse handle específico. Na recuperação após crash, a árvore só é encerrada depois da validação conservadora do processo e do profile exato. Depois da saída confirmada, são removidos metadata e artefatos transitórios de instância; o profile persistente e os dados de sessão permanecem. A limpeza explícita de acesso continua sendo a única operação que apaga a pasta do provider selecionado.
 
 Os módulos `browser/` QtWebEngine permanecem como legado de rollback, mas o import/fluxo ativo da aplicação não os carrega ou instancia. A aprovação funcional de compatibilidade do site depende do teste manual no Chrome real; o smoke automatizado usa apenas profile temporário e `about:blank`.
 
@@ -164,4 +165,22 @@ O modo de execução não é estado da fila e não é duplicado em `QueueItem`; 
 
 Shutterstock exige interação legítima do usuário. A UI abre o item selecionado no navegador padrão usando `QueueItem.normalized_url`, sem modificar o item ou marcar conclusão. A ação de Acessos abre a página inicial da mesma forma. “Limpar acesso” não opera sobre o profile pessoal.
 
-Assetway e Envato continuam na navegação Chrome gerenciada existente, porém com estratégia `UNVALIDATED`; nenhum deles é declarado automatizado. A infraestrutura Chrome/CDP permanece separada e disponível. Não há download, scraping, monitoramento de pasta, extensão, Native Messaging ou automação de provider nesta etapa.
+Assetway usa a navegação Chrome gerenciada com estratégia `AUTOMATED`; Envato permanece na infraestrutura gerenciada com estratégia `UNVALIDATED`. Shutterstock continua no navegador padrão, sem CDP. Os conectores permanecem separados e não usam scraping privado, extensão, Native Messaging, stealth ou bypass.
+
+## Primeiro download Assetway (Etapa 07A)
+
+`providers/assetway/` implementa a leitura semântica da página, descoberta da ação e opções de qualidade para um `QueueItem` por vez. A UI coleta automaticamente todos os Assetway `READY` e encadeia workers Qt sequencialmente; falhas isoladas não interrompem os itens seguintes. O ChromeRuntime continua genérico e o acesso CDP só é retornado quando `ChromeProcessManager` confirma processo próprio ativo.
+
+O downloader abre `QueueItem.normalized_url` sem reconstrução, confirma host/referência do ativo e detecta login sem ler campos ou credenciais. Controles são encontrados por DOM visível, texto curto, role e atributos acessíveis. Não registra HTML nem URL completa.
+
+Cada execução Assetway mantém uma sessão de página vinculada ao `target_id` criado pelo runtime e ao `QueueItem`; nenhum target é escolhido novamente durante o item. Após `Page.navigate`, o worker confirma rota, `document.readyState`, corpo útil e estabilidade da SPA. A descoberta progressiva aguarda controles dinâmicos e inspeciona o documento principal, frames acessíveis via contextos CDP e shadow roots abertos. Somente metadados sanitizados de estrutura e controles são registrados.
+
+Antes do clique final, `Browser.setDownloadBehavior` aponta para `runtime/downloads/<batch_id>/<item_id>/attempt-<n>/`; eventos `Browser.downloadWillBegin` e `Browser.downloadProgress` confirmam a transferência. A fila só recebe `COMPLETED` depois de validar arquivo final estável, extensão/formato e bytes recebidos. `.crdownload`, vazio, HTML, formato inconsistente e ausência de evidência de qualidade são rejeitados. Preview, thumbnail, watermark e opções não reconhecidas não são selecionados.
+
+Se os controles oficiais não demonstrarem uma qualidade original, vetorial ou alta explicitamente reconhecida, o item falha com `quality_unverified`. Essa etapa não converte, faz upscale, aceita screenshot, usa a pasta Downloads pessoal nem inicia automação de outros providers. O diagnóstico DOM fica oculto atrás de `IMAGE_DOWNLOADER_DEV_TOOLS=1`. O fluxo real foi validado com os assets 65507 (EPS original) e 81654 (JPEG original), incluindo processamento sequencial, verificação física e ZIP íntegro; por isso Assetway foi promovido para `AUTOMATED`. A suíte pytest continua isolada por fakes.
+
+A experiência principal não usa a tabela como controle operacional: o usuário adiciona entradas, aciona “Baixar imagens” uma vez e escolhe o destino do ZIP ao final. A tabela fica oculta por padrão em “Ver detalhes”; acessos ficam em diálogo secundário. Seleção de linha permanece apenas para consulta e diagnóstico.
+
+Shutterstock usa fluxo assistido sem CDP: a aplicação fotografa o estado da pasta Downloads, abre o item no navegador padrão e um worker detecta exatamente um arquivo novo, final e estável. O arquivo é validado e copiado para o diretório do item no runtime antes da transição para `COMPLETED`.
+
+Ao final, `BatchArchiveService` compacta somente caminhos validados em `runtime/archives/<batch_id>/`. A criação roda fora da thread UI; depois dela o usuário escolhe a pasta e uma cópia com nome não conflitante é salva. Falhas individuais não impedem ZIP dos sucessos.

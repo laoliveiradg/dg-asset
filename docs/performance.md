@@ -66,6 +66,10 @@ O working set do processo principal passou de 48,7 MiB para 123,2 MiB (+74,5 MiB
 
 O runtime instrumenta localização/versão do Chrome, preparação do profile, criação de processo, espera por `DevToolsActivePort`, conexão CDP, abertura do target e encerramento. Startup e CDP rodam em workers para que a thread da UI não aguarde o processo. A medição funcional usa `about:blank`; o carregamento dos providers fica para validação manual.
 
+## Download único Assetway (Etapa 07A)
+
+Cada worker registra separadamente navegação/abertura do ativo, localização da ação, descoberta de qualidade, início do download, transferência, validação do arquivo e tempo total. Os workers são encadeados sequencialmente fora da thread UI; ainda não há paralelismo. O processamento Assetway usa Chrome `BACKGROUND_HEADED` minimizado e troca para `INTERACTIVE` somente para autenticação, fechando antes o processo próprio para reutilizar o mesmo profile com segurança. Detecção assistida Shutterstock e criação do ZIP também executam em workers.
+
 ## Limites da etapa atual
 
 Esta etapa não implementa scheduler avançado, benchmark de rede, downloads reais, ou otimização de concorrência operacional.

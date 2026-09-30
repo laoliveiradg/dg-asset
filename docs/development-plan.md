@@ -79,4 +79,4 @@ O desenvolvimento será realizado em fases separadas. Cada fase deve ser autoriz
 
 Nenhuma fase pode avançar automaticamente para a próxima sem autorização e validação explícitas.
 
-Etapas 01 a 06B foram concluídas. A Etapa 06C define políticas de execução independentes por provider: Shutterstock requer interação no navegador padrão; Assetway e Envato permanecem não validados. A estratégia de download deverá ser validada provider por provider antes de qualquer automação. A Etapa 07 não está autorizada por esta tarefa.
+Etapas 01 a 06C foram concluídas. A correção da Etapa 07A processa sequencialmente os itens Assetway `READY`, sem paralelismo, e teve o fluxo real validado com os assets 65507 e 81654, seguido de ZIP íntegro. Assetway foi promovido para `AUTOMATED`, preservando acesso e login manuais quando necessários. Shutterstock continua interativo e Envato não validado.

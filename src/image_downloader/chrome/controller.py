@@ -83,7 +83,7 @@ class ChromeSessionController(QObject):
 
     def status(self, provider: ProviderId | str) -> ChromeSessionStatus:
         resolved = self._require_provider(provider)
-        if self.execution_policy.mode_for(resolved) != ProviderExecutionMode.UNVALIDATED:
+        if not self._uses_managed_chrome(resolved):
             return ChromeSessionStatus(
                 resolved,
                 ChromeSessionState.UNVERIFIED,
@@ -103,13 +103,13 @@ class ChromeSessionController(QObject):
 
     def open_provider(self, provider: ProviderId | str) -> bool:
         resolved = self._require_provider(provider)
-        if self.execution_policy.mode_for(resolved) != ProviderExecutionMode.UNVALIDATED:
+        if not self._uses_managed_chrome(resolved):
             return False
         with self._lock:
             if self._shutting_down or resolved in self._active:
                 return False
             self._active[resolved] = "open"
-        runtime = self._ensure_runtime()
+        runtime = self.ensure_runtime()
         self.status_changed.emit(
             ChromeSessionStatus(
                 resolved,
@@ -127,13 +127,13 @@ class ChromeSessionController(QObject):
 
     def clear_provider(self, provider: ProviderId | str) -> bool:
         resolved = self._require_provider(provider)
-        if self.execution_policy.mode_for(resolved) != ProviderExecutionMode.UNVALIDATED:
+        if not self._uses_managed_chrome(resolved):
             return False
         with self._lock:
             if self._shutting_down or resolved in self._active:
                 return False
             self._active[resolved] = "clear"
-        runtime = self._ensure_runtime()
+        runtime = self.ensure_runtime()
         self.status_changed.emit(
             ChromeSessionStatus(
                 resolved,
@@ -155,7 +155,7 @@ class ChromeSessionController(QObject):
         for provider in SUPPORTED_PROVIDERS:
             if (
                 provider not in active_providers
-                and self.execution_policy.mode_for(provider) == ProviderExecutionMode.UNVALIDATED
+                and self._uses_managed_chrome(provider)
             ):
                 self.status_changed.emit(self.status(provider))
 
@@ -170,6 +170,15 @@ class ChromeSessionController(QObject):
             name="image-downloader-chrome-shutdown",
         )
         self._shutdown_thread.start()
+
+    def submit_worker(self, worker: QRunnable) -> bool:
+        """Run a provider worker in the pool awaited during managed shutdown."""
+
+        with self._lock:
+            if self._shutting_down:
+                return False
+            self._pool.start(worker)
+        return True
 
     def _shutdown_runtime(self) -> None:
         self._pool.waitForDone()
@@ -206,7 +215,7 @@ class ChromeSessionController(QObject):
 
         if isinstance(result, Exception):
             logger.warning("provider=%s chrome_%s_failed", provider.value, operation)
-            runtime = self._ensure_runtime()
+            runtime = self.ensure_runtime()
             runtime.record_error(provider, operation)
             status = ChromeSessionStatus(
                 provider,
@@ -221,7 +230,7 @@ class ChromeSessionController(QObject):
                 self.clear_finished.emit(provider, False)
             return
 
-        runtime = self._ensure_runtime()
+        runtime = self.ensure_runtime()
         status = runtime.status(provider)
         if operation == "open" and isinstance(result, ChromeOpenResult):
             timings = result.timings
@@ -241,10 +250,16 @@ class ChromeSessionController(QObject):
         if operation == "clear":
             self.clear_finished.emit(provider, True)
 
-    def _ensure_runtime(self) -> ChromeRuntime:
+    def ensure_runtime(self) -> ChromeRuntime:
         if self.chrome_runtime is None:
             self.chrome_runtime = ChromeRuntime()
         return self.chrome_runtime
+
+    def _uses_managed_chrome(self, provider: ProviderId) -> bool:
+        return self.execution_policy.mode_for(provider) in {
+            ProviderExecutionMode.AUTOMATED,
+            ProviderExecutionMode.UNVALIDATED,
+        }
 
     @staticmethod
     def _require_provider(provider: ProviderId | str) -> ProviderId:

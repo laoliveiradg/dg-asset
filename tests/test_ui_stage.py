@@ -4,6 +4,8 @@ import os
 import threading
 import zipfile
 from pathlib import Path
+from threading import Event
+from time import perf_counter
 from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -11,9 +13,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import QEventLoop, QMimeData, QPointF, Qt, QTimer, QUrl
 from PySide6.QtGui import QDropEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 
+from image_downloader.downloads.models import (
+    DownloadFailure,
+    DownloadResult,
+    DownloadStatus,
+    DownloadTimings,
+)
 from image_downloader.input.models import SourceType, UrlOccurrence, UrlRecord
+from image_downloader.providers.assetway.errors import AssetwayDownloadError
 from image_downloader.providers.capabilities import ProviderExecutionMode
 from image_downloader.providers.execution_policy import (
     DEFAULT_PROVIDER_EXECUTION_MODES,
@@ -21,7 +30,7 @@ from image_downloader.providers.execution_policy import (
 )
 from image_downloader.providers.models import ProviderId
 from image_downloader.providers.registry import ProviderRegistry
-from image_downloader.queue.models import QueueState
+from image_downloader.queue.models import QueueError, QueueState
 from image_downloader.ui.controllers.input_controller import InputController
 from image_downloader.ui.main_window import MainWindow
 from image_downloader.ui.widgets.drop_zone import DropZone
@@ -399,4 +408,308 @@ def test_selected_shutterstock_item_opens_exact_url_without_queue_transition(
         execution_policy=window.execution_policy,
     )
     assert window.controller.queue_manager.get_item(item.item_id).state == QueueState.READY
+    window.close()
+
+
+def test_global_download_action_depends_on_batch_not_selection(qt_app) -> None:
+    window = MainWindow()
+    assert isinstance(window.download_item_button, QPushButton)
+    assert "BAIXAR" in window.download_item_button.text()
+    assert not window.download_item_button.isEnabled()
+    text = "\n".join(
+        [
+            "https://plataformaa.assetway.com.br/p/acervo/search?modal=asset&assetId=7",
+            "https://www.shutterstock.com/image-photo/forest-123456789",
+            "https://elements.envato.com/example-item-ABC1234",
+            "https://example.com/unknown",
+        ]
+    )
+    result = wait_for_analysis(window, lambda: window.links_edit.setPlainText(text))
+    assert result.snapshot.summary.ready == 3
+
+    window.queue_table.clearSelection()
+    assert window.download_item_button.isEnabled()
+    assert not window.diagnose_item_button.isVisible()
+    assert not window.retry_download_button.isEnabled()
+
+    for row, item in enumerate(window.queue_model.items):
+        if item.provider != ProviderId.ASSETWAY:
+            window.queue_table.selectRow(row)
+            assert window.download_item_button.isEnabled()
+            assert not window.diagnose_item_button.isEnabled()
+            assert not window.retry_download_button.isEnabled()
+    window.close()
+
+
+def test_simulated_assetway_download_runs_off_ui_thread(qt_app, monkeypatch) -> None:
+    from image_downloader.ui import main_window as main_window_module
+
+    main_thread_id = threading.get_ident()
+    worker_thread_ids: list[int] = []
+    started_events: list[Event] = []
+    finished_events: list[Event] = []
+    first_started = Event()
+    release = Event()
+
+    class BlockingDownloader:
+        def __init__(self, runtime) -> None:
+            pass
+
+        def download_item(self, queue_manager, item_id, progress):
+            worker_thread_ids.append(threading.get_ident())
+            started = Event()
+            finished = Event()
+            started_events.append(started)
+            finished_events.append(finished)
+            if len(started_events) == 1:
+                first_started.set()
+            queue_manager.start_processing(item_id)
+            progress("Preparando ativo...")
+            started.set()
+            release.wait(timeout=3.0)
+            queue_manager.mark_failed(
+                item_id,
+                QueueError(
+                    "authentication_required",
+                    "Entre manualmente no Assetway e tente novamente.",
+                    ProviderId.ASSETWAY,
+                    True,
+                ),
+            )
+            finished.set()
+            return DownloadResult(
+                item_id=item_id,
+                provider=ProviderId.ASSETWAY,
+                status=DownloadStatus.FAILED,
+                file_path=None,
+                file_name=None,
+                extension=None,
+                bytes_received=0,
+                quality_label=None,
+                source_format=None,
+                timings=DownloadTimings(),
+                error=DownloadFailure(
+                    "authentication_required",
+                    "Entre manualmente no Assetway e tente novamente.",
+                    True,
+                ),
+            )
+
+    monkeypatch.setattr(main_window_module, "AssetwayDownloader", BlockingDownloader)
+    window = MainWindow()
+    result = wait_for_analysis(
+        window,
+        lambda: window.links_edit.setPlainText(
+            "https://plataformaa.assetway.com.br/p/acervo/search?modal=asset&assetId=7"
+        ),
+    )
+    item = result.snapshot.items[0]
+    window.queue_table.clearSelection()
+    started_at = perf_counter()
+    window.download_item_button.click()
+    click_elapsed = perf_counter() - started_at
+
+    assert click_elapsed < 0.2
+    assert first_started.wait(timeout=2.0)
+    progress_loop = QEventLoop()
+    progress_poll = QTimer()
+    progress_poll.setInterval(5)
+    progress_poll.timeout.connect(
+        lambda: progress_loop.quit()
+        if window.status_label.text() == "Preparando downloads..."
+        else None
+    )
+    progress_poll.start()
+    QTimer.singleShot(1000, progress_loop.quit)
+    progress_loop.exec()
+    progress_poll.stop()
+    assert worker_thread_ids and worker_thread_ids[0] != main_thread_id
+    assert window.status_label.text() == "Preparando downloads..."
+    assert window.download_progress_label.text() == "Preparando downloads..."
+    assert window.controller.queue_manager.get_item(item.item_id).state == QueueState.PROCESSING
+    assert not window.download_item_button.isEnabled()
+
+    loop = QEventLoop()
+    window._assetway_download_worker.signals.completed.connect(lambda *_: loop.quit())
+    release.set()
+    QTimer.singleShot(3000, loop.quit)
+    loop.exec()
+    assert window.controller.queue_manager.get_item(item.item_id).state == QueueState.FAILED
+    assert window.controller.queue_manager.get_item(item.item_id).state == QueueState.FAILED
+    window.close()
+
+
+def test_global_action_collects_multiple_assetway_and_continues_to_other_modes(
+    qt_app, monkeypatch
+) -> None:
+    from image_downloader.ui import main_window as main_window_module
+
+    processed: list[str] = []
+
+    class SequentialDownloader:
+        def __init__(self, runtime) -> None:
+            pass
+
+        def download_item(self, queue_manager, item_id, progress):
+            processed.append(item_id)
+            queue_manager.start_processing(item_id)
+            progress("Baixando...")
+            if len(processed) == 1:
+                queue_manager.mark_failed(
+                    item_id,
+                    QueueError(
+                        "download_action_unverified",
+                        "Controle oficial não identificado.",
+                        ProviderId.ASSETWAY,
+                        False,
+                    ),
+                )
+                return DownloadResult(
+                    item_id=item_id,
+                    provider=ProviderId.ASSETWAY,
+                    status=DownloadStatus.FAILED,
+                    file_path=None,
+                    file_name=None,
+                    extension=None,
+                    bytes_received=0,
+                    quality_label=None,
+                    source_format=None,
+                    timings=DownloadTimings(),
+                    error=DownloadFailure(
+                        "download_action_unverified",
+                        "Controle oficial não identificado.",
+                        False,
+                    ),
+                )
+            queue_manager.mark_completed(item_id)
+            return DownloadResult(
+                item_id=item_id,
+                provider=ProviderId.ASSETWAY,
+                status=DownloadStatus.COMPLETED,
+                file_path=None,
+                file_name="asset.png",
+                extension=".png",
+                bytes_received=10,
+                quality_label="Original PNG",
+                source_format="PNG",
+                timings=DownloadTimings(),
+            )
+
+    monkeypatch.setattr(main_window_module, "AssetwayDownloader", SequentialDownloader)
+    window = MainWindow()
+    text = "\n".join(
+        [
+            "https://plataformaa.assetway.com.br/p/acervo/search?modal=asset&assetId=7",
+            "https://plataformaa.assetway.com.br/p/acervo/search?modal=asset&assetId=8",
+            "https://www.shutterstock.com/image-photo/forest-123456789",
+            "https://elements.envato.com/example-item-ABC1234",
+        ]
+    )
+    wait_for_analysis(window, lambda: window.links_edit.setPlainText(text))
+    window.queue_table.clearSelection()
+
+    def fail_assisted(item):
+        window.controller.queue_manager.start_processing(item.item_id)
+        window.controller.queue_manager.mark_failed(
+            item.item_id,
+            QueueError(
+                "assisted_download_timeout",
+                "Download assistido não detectado.",
+                ProviderId.SHUTTERSTOCK,
+                True,
+            ),
+        )
+        window._batch_finished += 1
+        window._batch_failed += 1
+        window._start_next_batch_item()
+
+    monkeypatch.setattr(window, "_submit_shutterstock_download", fail_assisted)
+
+    window.download_item_button.click()
+    loop = QEventLoop()
+    poll_timer = QTimer()
+    poll_timer.setInterval(10)
+    poll_timer.timeout.connect(lambda: loop.quit() if window._batch_total == 0 else None)
+    poll_timer.start()
+    QTimer.singleShot(3000, loop.quit)
+    loop.exec()
+    poll_timer.stop()
+
+    assert len(processed) == 2
+    assetway_items = [
+        item
+        for item in window.controller.queue_manager.list_items()
+        if item.provider == ProviderId.ASSETWAY
+    ]
+    assert [item.state for item in assetway_items] == [
+        QueueState.FAILED,
+        QueueState.COMPLETED,
+    ]
+    assert next(
+        item
+        for item in window.controller.queue_manager.list_items()
+        if item.provider == ProviderId.SHUTTERSTOCK
+    ).state == QueueState.FAILED
+    assert next(
+        item
+        for item in window.controller.queue_manager.list_items()
+        if item.provider == ProviderId.ENVATO
+    ).state == QueueState.READY
+    assert "1 concluídas" in window.download_progress_label.text()
+    assert "2 com falha" in window.download_progress_label.text()
+    window.close()
+
+
+def test_technical_controls_are_secondary_and_details_are_hidden(qt_app) -> None:
+    window = MainWindow()
+
+    assert window.settings_button.isVisibleTo(window)
+    assert window.access_dialog.isHidden()
+    assert window.queue_table.isHidden()
+    assert window.diagnose_item_button.isHidden()
+
+    window.details_button.setChecked(True)
+    assert not window.queue_table.isHidden()
+    window.close()
+
+
+def test_dom_diagnostic_is_visible_only_with_dev_tools(qt_app, monkeypatch) -> None:
+    monkeypatch.setenv("IMAGE_DOWNLOADER_DEV_TOOLS", "1")
+    window = MainWindow()
+
+    assert not window.diagnose_item_button.isHidden()
+    window.close()
+
+
+def test_clear_resets_progress_and_rejects_stale_download_result(qt_app) -> None:
+    window = MainWindow()
+    window.download_progress_label.setText(
+        "Processamento finalizado: 0 concluídas, 1 com falha de 1."
+    )
+    window._batch_total = 1
+    window._batch_failed = 1
+    stale_generation = window._download_generation
+
+    window.clear_button.click()
+    window._on_assetway_download_completed(
+        AssetwayDownloadError("download_failed", "Falha antiga.", retryable=True),
+        stale_generation,
+    )
+
+    assert window.controller.queue_manager.summary().total == 0
+    assert window.download_progress_label.text() == "Aguardando imagens para processar."
+    assert window._batch_total == 0
+    assert window._batch_failed == 0
+    window.close()
+
+
+def test_assetway_login_action_uses_interactive_access(qt_app) -> None:
+    window = MainWindow()
+    opened: list[ProviderId] = []
+    window.session_controller.open_provider = lambda provider: opened.append(provider) or True
+
+    window._open_assetway_login()
+
+    assert opened == [ProviderId.ASSETWAY]
+    assert "Entre no Assetway" in window.download_progress_label.text()
     window.close()

@@ -10,7 +10,7 @@ from image_downloader.providers.models import ProviderId
 
 DEFAULT_PROVIDER_EXECUTION_MODES = MappingProxyType(
     {
-        ProviderId.ASSETWAY: ProviderExecutionMode.UNVALIDATED,
+        ProviderId.ASSETWAY: ProviderExecutionMode.AUTOMATED,
         ProviderId.SHUTTERSTOCK: ProviderExecutionMode.INTERACTIVE_REQUIRED,
         ProviderId.ENVATO: ProviderExecutionMode.UNVALIDATED,
         ProviderId.UNKNOWN: ProviderExecutionMode.UNAVAILABLE,

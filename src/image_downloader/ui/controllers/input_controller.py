@@ -152,6 +152,16 @@ class InputController(QObject):
         self.warning_changed.emit("")
         self.status_changed.emit("Lote limpo. Pronto para novas entradas.")
 
+    def publish_queue_snapshot(self) -> QueueSnapshot:
+        """Publish the current QueueManager state after an external queue transition."""
+
+        with self._state_lock:
+            self._revision += 1
+            snapshot = self._make_snapshot_locked()
+            self._last_published_revision = snapshot.revision
+        self.queue_changed.emit(snapshot)
+        return snapshot
+
     def _new_request(
         self,
         *,
