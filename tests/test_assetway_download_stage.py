@@ -530,6 +530,27 @@ def test_missing_download_action_produces_specific_failure(tmp_path) -> None:
     assert queue.get_item(item.item_id).state == QueueState.FAILED
 
 
+def test_header_download_does_not_replace_missing_asset_modal_action(tmp_path) -> None:
+    downloader, queue, item, _, _ = build_downloader(
+        tmp_path,
+        snapshot=make_snapshot(
+            controls=[
+                {
+                    "index": 0,
+                    "tag": "button",
+                    "text": "Baixar",
+                    "context": "page",
+                }
+            ]
+        ),
+    )
+
+    result = downloader.download_item(queue, item.item_id)
+
+    assert result.status == DownloadStatus.FAILED
+    assert result.error.code == "download_action_unverified"
+
+
 def test_dom_diagnostic_logs_only_sanitized_metadata_and_never_clicks(
     tmp_path, caplog
 ) -> None:

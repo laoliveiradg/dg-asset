@@ -466,13 +466,19 @@ class MainWindow(QMainWindow):
         self.summary_values["envato"].setText(str(summary.provider_counts[ProviderId.ENVATO]))
         self.summary_values["blocked"].setText(str(summary.blocked))
         automatic = sum(
-            item.provider == ProviderId.ASSETWAY and item.state == QueueState.READY
+            self.execution_policy.mode_for(item.provider) == ProviderExecutionMode.AUTOMATED
+            and item.state == QueueState.READY
             for item in snapshot.items
         )
         interactive = sum(
-            item.provider == ProviderId.SHUTTERSTOCK for item in snapshot.items
+            self.execution_policy.mode_for(item.provider)
+            == ProviderExecutionMode.INTERACTIVE_REQUIRED
+            for item in snapshot.items
         )
-        unvalidated = sum(item.provider == ProviderId.ENVATO for item in snapshot.items)
+        unvalidated = sum(
+            self.execution_policy.mode_for(item.provider) == ProviderExecutionMode.UNVALIDATED
+            for item in snapshot.items
+        )
         unavailable = sum(item.provider == ProviderId.UNKNOWN for item in snapshot.items)
         self.batch_summary_label.setText(
             f"{summary.total} imagens encontradas · {automatic} prontas para download "
@@ -684,7 +690,8 @@ class MainWindow(QMainWindow):
         return [
             item
             for item in self.controller.queue_manager.list_items()
-            if item.provider in {ProviderId.ASSETWAY, ProviderId.SHUTTERSTOCK}
+            if item.provider
+            in {ProviderId.ASSETWAY, ProviderId.SHUTTERSTOCK, ProviderId.ENVATO}
             and item.state == QueueState.READY
         ]
 
@@ -696,13 +703,13 @@ class MainWindow(QMainWindow):
                 if item.provider == ProviderId.ASSETWAY:
                     self._submit_assetway_download(item)
                     return
-                if item.provider == ProviderId.SHUTTERSTOCK:
-                    self._submit_shutterstock_download(item)
+                if item.provider in {ProviderId.SHUTTERSTOCK, ProviderId.ENVATO}:
+                    self._submit_interactive_download(item)
                     return
             self._batch_finished += 1
         self._finish_download_batch()
 
-    def _submit_shutterstock_download(self, item: QueueItem) -> None:
+    def _submit_interactive_download(self, item: QueueItem) -> None:
         runtime = self.session_controller.ensure_runtime()
         monitor = AssistedDownloadMonitor(
             Path.home() / "Downloads",
@@ -711,7 +718,7 @@ class MainWindow(QMainWindow):
         before = monitor.snapshot()
         try:
             opened = open_interactive_provider(
-                ProviderId.SHUTTERSTOCK,
+                item.provider,
                 item.normalized_url,
                 execution_policy=self.execution_policy,
             )
@@ -723,8 +730,8 @@ class MainWindow(QMainWindow):
                 item.item_id,
                 QueueError(
                     "interactive_open_failed",
-                    "Não foi possível abrir o item Shutterstock.",
-                    ProviderId.SHUTTERSTOCK,
+                    f"Não foi possível abrir o item {PROVIDER_NAMES[item.provider]}.",
+                    item.provider,
                     True,
                 ),
             )
@@ -733,7 +740,9 @@ class MainWindow(QMainWindow):
             self._start_next_batch_item()
             return
         self._active_download_item_id = item.item_id
-        self.download_progress_label.setText("Aguardando confirmação no Shutterstock...")
+        waiting_message = f"Aguardando o download no {PROVIDER_NAMES[item.provider]}..."
+        self.status_label.setText(waiting_message)
+        self.download_progress_label.setText(waiting_message)
         worker = AssistedDownloadWorker(
             monitor,
             self.controller.queue_manager,
@@ -981,13 +990,21 @@ class MainWindow(QMainWindow):
                 self._batch_completed += 1
                 if outcome.file_path is not None:
                     self._batch_files.append(outcome.file_path)
+                if outcome.provider in {ProviderId.SHUTTERSTOCK, ProviderId.ENVATO}:
+                    self.status_label.setText("Download recebido. Continuando...")
+                    self.download_progress_label.setText("Download recebido. Continuando...")
             else:
                 self._batch_failed += 1
             remaining = self._batch_total - self._batch_finished
-            self.download_progress_label.setText(
-                f"{self._batch_total} imagens · {self._batch_completed} concluídas · "
-                f"{self._batch_failed} falharam · {remaining} restantes"
-            )
+            if not (
+                isinstance(outcome, DownloadResult)
+                and outcome.status == DownloadStatus.COMPLETED
+                and outcome.provider in {ProviderId.SHUTTERSTOCK, ProviderId.ENVATO}
+            ):
+                self.download_progress_label.setText(
+                    f"{self._batch_total} imagens · {self._batch_completed} concluídas · "
+                    f"{self._batch_failed} falharam · {remaining} restantes"
+                )
             self._start_next_batch_item()
             return
         elif isinstance(outcome, AssetwayDownloadError):

@@ -480,8 +480,18 @@ class AssetwayDownloader:
                 snapshot = session.page.inspect()
         page_state = "empty" if not snapshot.body_ready else "no_download_control"
         session.page.log_download_diagnostic(snapshot, page_state=page_state)
-        snapshot.find_download_action()
-        raise AssertionError("unreachable")
+        action = snapshot.find_download_action()
+        expected_query = parse_qs(
+            urlsplit(session.queue_item.normalized_url).query,
+            keep_blank_values=True,
+        )
+        if expected_query.get("modal") == ["asset"] and action.context != "dialog":
+            raise AssetwayDownloadError(
+                "download_action_unverified",
+                "O modal oficial do ativo não apresentou uma ação de download verificável.",
+                retryable=True,
+            )
+        return snapshot, action
 
     def _wait_for_quality_options(
         self,

@@ -79,4 +79,4 @@ O desenvolvimento será realizado em fases separadas. Cada fase deve ser autoriz
 
 Nenhuma fase pode avançar automaticamente para a próxima sem autorização e validação explícitas.
 
-Etapas 01 a 06C foram concluídas. A correção da Etapa 07A processa sequencialmente os itens Assetway `READY`, sem paralelismo, e teve o fluxo real validado com os assets 65507 e 81654, seguido de ZIP íntegro. Assetway foi promovido para `AUTOMATED`, preservando acesso e login manuais quando necessários. Shutterstock continua interativo e Envato não validado.
+Etapas 01 a 06C foram concluídas. O MVP misto foi validado com Assetway 65507 automático, Shutterstock 2725068401 assistido e Envato 3e33fbad-d417-4368-9778-8c89c416cbf1 assistido. Os arquivos reais foram validados, reunidos em ZIP com CRC aprovado e exportados pelo seletor de pasta. Assetway é `AUTOMATED`; Shutterstock e Envato são `INTERACTIVE_REQUIRED`.

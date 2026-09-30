@@ -615,7 +615,7 @@ def test_global_action_collects_multiple_assetway_and_continues_to_other_modes(
             QueueError(
                 "assisted_download_timeout",
                 "Download assistido não detectado.",
-                ProviderId.SHUTTERSTOCK,
+                item.provider,
                 True,
             ),
         )
@@ -623,7 +623,7 @@ def test_global_action_collects_multiple_assetway_and_continues_to_other_modes(
         window._batch_failed += 1
         window._start_next_batch_item()
 
-    monkeypatch.setattr(window, "_submit_shutterstock_download", fail_assisted)
+    monkeypatch.setattr(window, "_submit_interactive_download", fail_assisted)
 
     window.download_item_button.click()
     loop = QEventLoop()
@@ -654,9 +654,44 @@ def test_global_action_collects_multiple_assetway_and_continues_to_other_modes(
         item
         for item in window.controller.queue_manager.list_items()
         if item.provider == ProviderId.ENVATO
-    ).state == QueueState.READY
+    ).state == QueueState.FAILED
     assert "1 concluídas" in window.download_progress_label.text()
-    assert "2 com falha" in window.download_progress_label.text()
+    assert "3 com falha" in window.download_progress_label.text()
+    window.close()
+
+
+@pytest.mark.parametrize("provider", [ProviderId.SHUTTERSTOCK, ProviderId.ENVATO])
+def test_interactive_completion_advances_without_user_confirmation(
+    qt_app, tmp_path, monkeypatch, provider
+) -> None:
+    window = MainWindow()
+    downloaded = tmp_path / "licensed.jpg"
+    downloaded.write_bytes(b"\xff\xd8\xffdownload")
+    window._batch_total = 2
+    window._batch_finished = 0
+    window._batch_item_ids = ["next-item"]
+    advanced: list[bool] = []
+    monkeypatch.setattr(window, "_start_next_batch_item", lambda: advanced.append(True))
+
+    window._on_assetway_download_completed(
+        DownloadResult(
+            item_id="shutterstock-item",
+            provider=provider,
+            status=DownloadStatus.COMPLETED,
+            file_path=downloaded,
+            file_name=downloaded.name,
+            extension=".jpg",
+            bytes_received=downloaded.stat().st_size,
+            quality_label="Download oficial assistido",
+            source_format="JPEG",
+            timings=DownloadTimings(),
+        )
+    )
+
+    assert advanced == [True]
+    assert window.status_label.text() == "Download recebido. Continuando..."
+    assert window.download_progress_label.text() == "Download recebido. Continuando..."
+    assert window._batch_files == [downloaded]
     window.close()
 
 

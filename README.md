@@ -19,7 +19,7 @@ MVP em integração: entrada unificada, processamento sequencial por provider, v
 - assistir downloads Shutterstock no navegador padrão e reunir resultados válidos em ZIP;
 - manter detalhes da fila e gerenciamento de acessos fora do fluxo principal.
 
-O parsing e a classificação são locais. Assetway é `AUTOMATED`, Shutterstock é `INTERACTIVE_REQUIRED` e Envato continua `UNVALIDATED` na política central. O fluxo real Assetway foi validado com dois itens em sequência; qualidade sem comprovação resulta em falha. Login continua manual. Não há paralelismo, retry automático, automação Envato, scraping ou stealth.
+O parsing e a classificação são locais. Assetway é `AUTOMATED`; Shutterstock e Envato são `INTERACTIVE_REQUIRED`. Os três providers e o ZIP misto foram validados com ativos reais; qualidade sem comprovação resulta em falha. Login e downloads exigidos pelos providers interativos continuam manuais. Não há paralelismo, retry automático, scraping ou stealth.
 
 ## Organização
 

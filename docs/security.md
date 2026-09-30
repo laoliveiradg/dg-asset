@@ -48,7 +48,7 @@ Não há validação definitiva de login, extração de assets, scraping, automa
 
 - Shutterstock usa `webbrowser.open` para uma navegação iniciada pelo usuário no navegador padrão; a aplicação não controla nem lê o profile desse navegador.
 - A navegação interativa não inicia CDP, não conecta a Chrome externo, não copia sessão/cookies e não lê storage.
-- Assetway é `AUTOMATED`; Envato permanece `UNVALIDATED`. Ambos usam somente a infraestrutura Chrome gerenciada existente, com profiles isolados e acesso manual quando necessário.
+- Assetway é `AUTOMATED`. Envato é `INTERACTIVE_REQUIRED` e, como Shutterstock, abre no navegador padrão sem CDP ou acesso ao profile pessoal.
 - Não se tenta mascarar automação nem contornar controles anti-bot; login, 2FA e ações do site permanecem manuais.
 - A URL do item é passada sem reconstrução, preservando query e fragmento; abrir a URL não altera o estado da fila.
 

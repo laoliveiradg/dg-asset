@@ -12,7 +12,7 @@ DEFAULT_PROVIDER_EXECUTION_MODES = MappingProxyType(
     {
         ProviderId.ASSETWAY: ProviderExecutionMode.AUTOMATED,
         ProviderId.SHUTTERSTOCK: ProviderExecutionMode.INTERACTIVE_REQUIRED,
-        ProviderId.ENVATO: ProviderExecutionMode.UNVALIDATED,
+        ProviderId.ENVATO: ProviderExecutionMode.INTERACTIVE_REQUIRED,
         ProviderId.UNKNOWN: ProviderExecutionMode.UNAVAILABLE,
     }
 )

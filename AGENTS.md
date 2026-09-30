@@ -51,9 +51,9 @@
 ## Regras de etapa atual
 
 - A Etapa 06B mantém Chrome próprio gerenciado por CDP local disponível para providers cuja política permita esse fluxo.
-- A política centralizada por provider define Assetway como `AUTOMATED`, Shutterstock como `INTERACTIVE_REQUIRED` e Envato como `UNVALIDATED`.
+- A política centralizada por provider define Assetway como `AUTOMATED` e Shutterstock/Envato como `INTERACTIVE_REQUIRED`.
 - A prioridade atual é entregar o MVP ponta a ponta: orquestração sequencial por provider, downloads validados, ZIP com sucessos e escolha de destino ao final.
-- Assetway usa Chrome gerenciado `BACKGROUND_HEADED` por padrão; Shutterstock permanece assistido no navegador padrão; Envato permanece `UNVALIDATED` até validação real. Não implementar paralelismo, stealth, bypass ou retry automático.
+- Assetway usa Chrome gerenciado `BACKGROUND_HEADED` por padrão; Shutterstock e Envato permanecem assistidos no navegador padrão. Não implementar paralelismo, stealth, bypass ou retry automático.
 - Nunca usar profile pessoal no Chrome gerenciado, conectar a Chrome externo via CDP, copiar cookies ou encerrar processos que não sejam próprios.
 - A navegação interativa pelo navegador padrão não autoriza leitura ou alteração do profile normal do usuário.
 - Profiles gerenciados ficam separados por provider em runtime/chrome_profiles e nunca são versionados.

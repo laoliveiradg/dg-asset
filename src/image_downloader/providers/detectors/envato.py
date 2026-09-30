@@ -14,12 +14,19 @@ class EnvatoDetector(ProviderDetector):
     def matches(self, hostname: str, path: str) -> bool:
         if not hostname:
             return False
-        return hostname == "elements.envato.com"
+        return hostname in {"elements.envato.com", "app.envato.com"}
 
     def extract_reference(self, hostname: str, path: str, query: str) -> str | None:
         last_segment = path.rstrip("/").split("/")[-1] if path else ""
         if not last_segment:
             return None
+        if hostname == "app.envato.com":
+            match = re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                last_segment,
+                flags=re.IGNORECASE,
+            )
+            return match.group(0).lower() if match else None
         if len(last_segment) < 4:
             return None
         if not re.search(r"[A-Z0-9]", last_segment, flags=re.IGNORECASE):

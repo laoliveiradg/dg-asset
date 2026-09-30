@@ -53,7 +53,7 @@ A arquitetura do projeto foi desenhada para separar responsabilidades claras e p
 
 `ProviderExecutionMode` descreve a estratégia/capacidade do provider sem alterar o `QueueState`. `ProviderRegistry` continua responsável somente por classificação; a política centralizada mapeia `ProviderId` para `AUTOMATED`, `INTERACTIVE_REQUIRED`, `UNVALIDATED` ou `UNAVAILABLE`.
 
-Política atual: Assetway é `AUTOMATED`, Shutterstock é `INTERACTIVE_REQUIRED`, Envato é `UNVALIDATED` e `UNKNOWN` é `UNAVAILABLE`. Um provider interativo continua suportado e seus itens permanecem `READY`. A UI consulta a política para escolher a ação, e o futuro scheduler deverá fazer o mesmo.
+Política atual: Assetway é `AUTOMATED`, Shutterstock e Envato são `INTERACTIVE_REQUIRED`, e `UNKNOWN` é `UNAVAILABLE`. Um provider interativo continua suportado e seus itens permanecem `READY`. A UI consulta a política para escolher a ação, e o futuro scheduler deverá fazer o mesmo.
 
 Para navegação interativa, `open_interactive_provider(provider, url)` envia a URL original/normalizada ao navegador padrão do Windows via biblioteca padrão. O sistema não conecta via CDP, não inicia Chrome gerenciado para essa ação e não acessa o profile normal. Query e fragmento são preservados. O ChromeRuntime da Etapa 06B permanece disponível para providers que venham a ser validados para esse mecanismo.
 
@@ -165,7 +165,7 @@ O modo de execução não é estado da fila e não é duplicado em `QueueItem`; 
 
 Shutterstock exige interação legítima do usuário. A UI abre o item selecionado no navegador padrão usando `QueueItem.normalized_url`, sem modificar o item ou marcar conclusão. A ação de Acessos abre a página inicial da mesma forma. “Limpar acesso” não opera sobre o profile pessoal.
 
-Assetway usa a navegação Chrome gerenciada com estratégia `AUTOMATED`; Envato permanece na infraestrutura gerenciada com estratégia `UNVALIDATED`. Shutterstock continua no navegador padrão, sem CDP. Os conectores permanecem separados e não usam scraping privado, extensão, Native Messaging, stealth ou bypass.
+Assetway usa a navegação Chrome gerenciada com estratégia `AUTOMATED`. Shutterstock e Envato usam fluxo assistido no navegador padrão, sem CDP sobre o profile pessoal. Os conectores permanecem separados e não usam scraping privado, extensão, Native Messaging, stealth ou bypass.
 
 ## Primeiro download Assetway (Etapa 07A)
 
@@ -181,6 +181,10 @@ Se os controles oficiais não demonstrarem uma qualidade original, vetorial ou a
 
 A experiência principal não usa a tabela como controle operacional: o usuário adiciona entradas, aciona “Baixar imagens” uma vez e escolhe o destino do ZIP ao final. A tabela fica oculta por padrão em “Ver detalhes”; acessos ficam em diálogo secundário. Seleção de linha permanece apenas para consulta e diagnóstico.
 
-Shutterstock usa fluxo assistido sem CDP: a aplicação fotografa o estado da pasta Downloads, abre o item no navegador padrão e um worker detecta exatamente um arquivo novo, final e estável. O arquivo é validado e copiado para o diretório do item no runtime antes da transição para `COMPLETED`.
+Shutterstock usa fluxo assistido sem CDP: a aplicação fotografa o estado da pasta Downloads, abre o item no navegador padrão e um worker detecta exatamente um arquivo novo, final e estável. Caminhos já existentes e extensões temporárias são ignorados. HTML e assinaturas incompatíveis são rejeitados; dois arquivos novos resultam em `ambiguous_download`. O arquivo é validado e copiado para o diretório do item no runtime antes da transição para `COMPLETED`, e a fila abre automaticamente o próximo item.
+
+A URL real do Envato foi exercitada no Chrome gerenciado `BACKGROUND_HEADED`: a página oficial do ativo carregou sem challenge, mas exigiu autenticação/assinatura legítima (`Sign in`/`Subscribe to download`). Por isso Envato é `INTERACTIVE_REQUIRED` e usa o monitor assistido, sem automatizar login ou contornar licenciamento.
+
+O fluxo misto real foi validado com o Assetway 65507 (EPS original), Shutterstock 2725068401 (JPEG) e Envato 3e33fbad-d417-4368-9778-8c89c416cbf1 (JPEG). Os três arquivos passaram pela validação física e foram reunidos em um único ZIP com CRC aprovado, depois exportado pelo seletor de pasta.
 
 Ao final, `BatchArchiveService` compacta somente caminhos validados em `runtime/archives/<batch_id>/`. A criação roda fora da thread UI; depois dela o usuário escolhe a pasta e uma cópia com nome não conflitante é salva. Falhas individuais não impedem ZIP dos sucessos.

@@ -12,7 +12,6 @@ from image_downloader.downloads.models import (
     DownloadStatus,
     DownloadTimings,
 )
-from image_downloader.providers.models import ProviderId
 from image_downloader.queue.manager import QueueManager
 from image_downloader.queue.models import QueueError
 
@@ -64,7 +63,7 @@ class AssistedDownloadMonitor:
                 return self._fail(
                     queue_manager,
                     item_id,
-                    "assisted_download_ambiguous",
+                    "ambiguous_download",
                     "Mais de um arquivo novo foi detectado durante o download assistido.",
                 )
             time.sleep(self.poll_interval)
@@ -83,8 +82,7 @@ class AssistedDownloadMonitor:
             if not path.is_file() or path.suffix.casefold() in {".crdownload", ".tmp", ".part"}:
                 continue
             resolved = path.resolve()
-            current = (path.stat().st_size, path.stat().st_mtime_ns)
-            if before.get(resolved) != current:
+            if resolved not in before:
                 candidates.append(resolved)
         return candidates
 
@@ -136,7 +134,7 @@ class AssistedDownloadMonitor:
     @staticmethod
     def _fail(queue_manager, item_id: str, code: str, message: str) -> DownloadResult:
         item = queue_manager.get_item(item_id)
-        error = QueueError(code, message, ProviderId.SHUTTERSTOCK, True)
+        error = QueueError(code, message, item.provider, True)
         queue_manager.mark_failed(item_id, error)
         return DownloadResult(
             item_id=item_id,

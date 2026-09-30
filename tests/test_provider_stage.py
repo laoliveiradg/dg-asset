@@ -71,6 +71,17 @@ def test_envato_elements_item_and_case_variants_are_detected() -> None:
     fake = classify_url("https://elements.envato.com.evil.example/example-item-ABC1234")
     assert fake.provider == ProviderId.UNKNOWN
 
+    app_item = classify_url(
+        "https://app.envato.com/photos/3e33fbad-d417-4368-9778-8c89c416cbf1"
+    )
+    assert app_item.provider == ProviderId.ENVATO
+    assert app_item.asset_reference == "3e33fbad-d417-4368-9778-8c89c416cbf1"
+
+    fake_app = classify_url(
+        "https://app.envato.com.evil.example/photos/3e33fbad-d417-4368-9778-8c89c416cbf1"
+    )
+    assert fake_app.provider == ProviderId.UNKNOWN
+
 
 def test_unknown_and_security_hostname_cases() -> None:
     assert classify_url("https://example.com/asset/123").provider == ProviderId.UNKNOWN

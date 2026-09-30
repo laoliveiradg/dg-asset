@@ -33,7 +33,7 @@ def qt_app():
     [
         (ProviderId.SHUTTERSTOCK, ProviderExecutionMode.INTERACTIVE_REQUIRED),
         (ProviderId.ASSETWAY, ProviderExecutionMode.AUTOMATED),
-        (ProviderId.ENVATO, ProviderExecutionMode.UNVALIDATED),
+        (ProviderId.ENVATO, ProviderExecutionMode.INTERACTIVE_REQUIRED),
         (ProviderId.UNKNOWN, ProviderExecutionMode.UNAVAILABLE),
         ("not-a-provider", ProviderExecutionMode.UNAVAILABLE),
     ],
@@ -50,7 +50,7 @@ def test_execution_modes_are_centralized() -> None:
         ProviderExecutionMode.AUTOMATED
     )
     assert DEFAULT_PROVIDER_EXECUTION_MODES[ProviderId.ENVATO] == (
-        ProviderExecutionMode.UNVALIDATED
+        ProviderExecutionMode.INTERACTIVE_REQUIRED
     )
 
 
